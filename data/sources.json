@@ -1,14 +1,74 @@
 [
-  {"id":"prima","name":"PRIMA Residence Oradea","url":"https://primaoradea.ro/apartamente/","enabled":true},
-  {"id":"estoria","name":"Estoria City","url":"https://estoriacity-rezidential.ro/apartamente/","enabled":true},
-  {"id":"regnum","name":"Regnum Residence","url":"https://www.regnumresidence.ro/","enabled":true},
-  {"id":"blu","name":"BLU Drumul Taberei","url":"https://www.blu-dt.ro/apartamente-de-vanzare/","enabled":true},
-  {"id":"horizon","name":"Horizon City","url":"https://www.horizoncity.ro/apartament/","enabled":true},
-  {"id":"ivory","name":"Ivory Residence","url":"https://www.ivoryresidence.ro/","enabled":true},
-  {"id":"nari","name":"NARI Village","url":"https://www.narivillage.ro/","enabled":true},
-  {"id":"queens","name":"Queens District","url":"https://queensdistrict.ro/apartments/","enabled":true},
-  {"id":"glenwood","name":"Glenwood Estate","url":"https://glenwoodestate.ro/","enabled":true},
-  {"id":"alera","name":"Alera","url":"https://aleraproperties.ro/apartamente/","enabled":true},
-  {"id":"centropolitan","name":"Centropolitan","url":"https://cordia.ro/ansambluri-rezidentiale/centropolitan-by-cordia/","enabled":true},
-  {"id":"select","name":"Select Residences","url":"https://www.selectresidences.ro/apartments/","enabled":true}
+  {
+    "id": "prima",
+    "name": "PRIMA Residence Oradea",
+    "url": "https://primaoradea.ro/apartamente/",
+    "enabled": true
+  },
+  {
+    "id": "estoria",
+    "name": "Estoria City",
+    "url": "https://estoriacity-rezidential.ro/faza-3/",
+    "enabled": true
+  },
+  {
+    "id": "regnum",
+    "name": "Regnum Residence",
+    "url": "https://www.regnumresidence.ro/",
+    "enabled": true
+  },
+  {
+    "id": "blu",
+    "name": "BLU Drumul Taberei",
+    "url": "https://www.blu-dt.ro/apartamente-de-vanzare/",
+    "enabled": true
+  },
+  {
+    "id": "horizon",
+    "name": "Horizon City",
+    "url": "https://www.horizoncity.ro/apartament/",
+    "enabled": true
+  },
+  {
+    "id": "ivory",
+    "name": "Ivory Residence",
+    "url": "https://www.ivoryresidence.ro/",
+    "enabled": true
+  },
+  {
+    "id": "nari",
+    "name": "NARI Village",
+    "url": "https://www.narivillage.ro/",
+    "enabled": true
+  },
+  {
+    "id": "queens",
+    "name": "Queens District",
+    "url": "https://queensdistrict.ro/apartments/",
+    "enabled": true
+  },
+  {
+    "id": "glenwood",
+    "name": "Glenwood Estate",
+    "url": "https://glenwoodestate.ro/",
+    "enabled": true
+  },
+  {
+    "id": "alera",
+    "name": "Alera",
+    "url": "https://aleraproperties.ro/apartamente/",
+    "enabled": true
+  },
+  {
+    "id": "centropolitan",
+    "name": "Centropolitan",
+    "url": "https://cordia.ro/ansambluri-rezidentiale/centropolitan-by-cordia/",
+    "enabled": true
+  },
+  {
+    "id": "select",
+    "name": "Select Residences",
+    "url": "https://www.selectresidences.ro/apartments/",
+    "enabled": true
+  }
 ]

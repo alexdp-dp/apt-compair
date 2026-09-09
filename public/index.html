@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AptCompare — Digital Partners</title>
+  <title>AptCompare — Digital Partners · Build 6</title>
   <meta name="description" content="Comparator de tipologii pentru proiecte rezidențiale.">
   <link rel="preconnect" href="https://www.digitalpartners.ro">
   <link rel="stylesheet" href="/styles.css">
@@ -110,8 +110,28 @@
 <div class="drawer" id="sourceDrawer" aria-hidden="true">
   <div class="drawer-panel">
     <div class="drawer-head"><div><div class="eyebrow">ADMIN</div><h2>Surse de date</h2></div><button class="iconbtn" id="closeDrawer">×</button></div>
-    <p class="drawer-copy">Sursele sunt persistente în PostgreSQL. Scanarea unei surse actualizează tipologiile deja cunoscute și păstrează istoricul de preț.</p>
+    <p class="drawer-copy">Sursele sunt persistente în PostgreSQL. Alege ce proiecte vrei să scanezi sau pornește scanarea individual direct din card.</p>
+    <div class="source-toolbar">
+      <div class="source-select-tools">
+        <button class="smallbtn" id="selectAllSources" type="button">Selectează toate</button>
+        <button class="smallbtn" id="deselectAllSources" type="button">Deselectează toate</button>
+        <span id="selectionCount">0 selectate</span>
+      </div>
+      <button class="primary" id="scanSelected" type="button">Scanează selecția</button>
+    </div>
     <div id="sources" class="sources-list"></div>
+
+    <div class="db-admin">
+      <div class="eyebrow">DATABASE ADMIN</div>
+      <h3>Golire date scanate</h3>
+      <p class="drawer-copy">Șterge rezultatele crawlerului fără să ștergi sursele, schema PostgreSQL sau DATABASE_URL.</p>
+      <label class="stack">Proiect
+        <select id="adminProject"><option value="">Alege proiectul…</option></select>
+      </label>
+      <button class="danger-outline wide" id="clearProject" type="button">Șterge datele proiectului</button>
+      <button class="danger wide" id="clearAll" type="button">Golește toate datele scanate</button>
+    </div>
+
     <div class="add-source">
       <h3>Adaugă sursă</h3>
       <input id="sname" placeholder="Nume proiect">
@@ -125,7 +145,7 @@
 <div class="modal" id="typesModal" aria-hidden="true">
   <div class="modal-card">
     <div class="modal-head"><div><div class="eyebrow">TIPOLOGII</div><h2 id="modalTitle">Proiect</h2></div><button class="iconbtn" id="closeModal">×</button></div>
-    <div class="types-table-wrap"><table class="types-table"><thead><tr><th>Tip</th><th>Camere</th><th>Utilă</th><th>Preț</th><th>€/mp</th><th>TVA</th><th>Finalizare</th><th>Sursă</th></tr></thead><tbody id="modalRows"></tbody></table></div>
+    <div class="types-table-wrap"><table class="types-table"><thead><tr><th>Tip</th><th>Camere</th><th>Suprafață</th><th>Preț</th><th>€/mp</th><th>TVA</th><th>Fază / status</th><th>Disponibilitate / sursă</th></tr></thead><tbody id="modalRows"></tbody></table></div>
   </div>
 </div>
 
