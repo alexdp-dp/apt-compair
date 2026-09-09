@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 14;
+const BUILD = 15;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -28,6 +28,25 @@ function resolveUrl(href, base) { try { return href ? new URL(href, base).href.s
 function hostOf(u){ try{return new URL(u).hostname.replace(/^www\./,'')}catch{return ''} }
 function sameHost(a,b){ return hostOf(a) === hostOf(b); }
 function originOf(u){ try{return new URL(u).origin}catch{return null} }
+function scopePathOf(u){
+  try{
+    let p=decodeURIComponent(new URL(u).pathname||'/').replace(/\/{2,}/g,'/');
+    if(!p.startsWith('/'))p='/'+p;
+    if(p!=='/'&&!p.endsWith('/'))p+='/';
+    return p;
+  }catch{return '/'}
+}
+function isInSourceScope(url,root){
+  try{
+    if(!sameHost(url,root))return false;
+    const base=scopePathOf(root);
+    if(base==='/')return true;
+    let p=decodeURIComponent(new URL(url).pathname||'/').replace(/\/{2,}/g,'/');
+    if(!p.startsWith('/'))p='/'+p;
+    const baseNoSlash=base.replace(/\/$/,'');
+    return p===baseNoSlash || p===base || p.startsWith(base);
+  }catch{return false}
+}
 
 function roomCount(typeName) {
   const t = norm(typeName).toLowerCase();
@@ -240,7 +259,7 @@ async function fetchText(url, accept='text/html,application/xhtml+xml,applicatio
 async function fetchHtml(url){const r=await fetchText(url);if(!/html/i.test(r.contentType)&&!/<(?:html|body|head)[\s>]/i.test(r.text.slice(0,1000)))throw new Error('Nu este HTML');return r.text}
 
 function genericLeaf(pathname){const p=pathname.toLowerCase().replace(/\/+$/,'');const leaf=p.split('/').filter(Boolean).pop()||'';return /^(?:apartamente?|apartments?|garsoniere?|studiouri?|studio|vile|case|houses?|townhouses?|tipuri-de-case|tipologii|locuinte|unitati|proprietati|properties|faza-?\d+|phase-?\d+|proiecte?|projects?|home|acasa|contact|localizare|locatie|location)$/.test(leaf)||/^(?:apartamente?|apartments?)-(?:de-)?(?:vanzare-)?[1-6]-(?:camere|camera)$/.test(leaf)}
-function isCandidateDetailUrl(url,root){try{const u=new URL(url);if(!sameHost(url,root))return false;if(genericLeaf(u.pathname)||u.pathname==='/'||/\.(?:jpg|jpeg|png|webp|svg|pdf|xml)$/i.test(u.pathname))return false;const p=u.pathname.toLowerCase();return /(?:apartament|apartment|studio|garson|duplex|penthouse|vila|villa|cas[ăa-]|case[-_/]|house|townhouse|unit|property|proprietate|tip[-_/])/i.test(p)}catch{return false}}
+function isCandidateDetailUrl(url,root){try{const u=new URL(url);if(!isInSourceScope(url,root))return false;if(genericLeaf(u.pathname)||u.pathname==='/'||/\.(?:jpg|jpeg|png|webp|svg|pdf|xml)$/i.test(u.pathname))return false;const p=u.pathname.toLowerCase();return /(?:apartament|apartment|studio|garson|duplex|penthouse|vila|villa|cas[ăa-]|case[-_/]|house|townhouse|unit|property|proprietate|tip[-_/])/i.test(p)}catch{return false}}
 function isLocationUrl(url){try{return /\/(?:localizare|locatie|location|contact)(?:\/|$)/i.test(new URL(url).pathname)}catch{return false}}
 
 async function discoverSitemaps(source){
@@ -248,7 +267,7 @@ async function discoverSitemaps(source){
   const starts=new Set([origin+'/sitemap.xml',origin+'/sitemap_index.xml',origin+'/wp-sitemap.xml']);
   try{const robots=await fetchText(origin+'/robots.txt','text/plain,*/*');for(const m of robots.text.matchAll(/^\s*Sitemap:\s*(https?:\/\/\S+)/gmi))starts.add(m[1].trim())}catch{}
   const seen=new Set(),urls=new Set(),queue=[...starts];
-  while(queue.length&&seen.size<30){const sm=queue.shift();if(seen.has(sm))continue;seen.add(sm);try{const {text}=await fetchText(sm,'application/xml,text/xml,text/plain,*/*');for(const m of text.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)){const loc=norm(m[1].replace(/&amp;/g,'&'));if(!loc||!sameHost(loc,source.url))continue;if(/\.xml(?:\?|$)/i.test(loc)||/sitemap/i.test(loc)&&!isCandidateDetailUrl(loc,source.url)){if(!seen.has(loc)&&queue.length<100)queue.push(loc)}else urls.add(loc)}}catch{}
+  while(queue.length&&seen.size<30){const sm=queue.shift();if(seen.has(sm))continue;seen.add(sm);try{const {text}=await fetchText(sm,'application/xml,text/xml,text/plain,*/*');for(const m of text.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)){const loc=norm(m[1].replace(/&amp;/g,'&'));if(!loc||!isInSourceScope(loc,source.url))continue;if(/\.xml(?:\?|$)/i.test(loc)||/sitemap/i.test(loc)&&!isCandidateDetailUrl(loc,source.url)){if(!seen.has(loc)&&queue.length<100)queue.push(loc)}else urls.add(loc)}}catch{}
   }
   return [...urls];
 }
@@ -313,7 +332,7 @@ function isDiscoveryUrl(url,label=''){
 function discoverLinksFromHtml(html,base,source){
   const $=cheerio.load(html),detail=new Map(),locations=new Set(),discovery=new Set();
   const consider=(href,label='',anchor=null)=>{
-    href=resolveUrl(href,base);if(!href||!sameHost(href,source.url))return;
+    href=resolveUrl(href,base);if(!href||!isInSourceScope(href,source.url))return;
     if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);
     if(isCandidateDetailUrl(href,source.url)){
       const titleHint=anchor?commercialHintFromAnchor($,anchor,source):null;
@@ -462,7 +481,7 @@ async function scanOneSource(runId,source){
     // Discovery pages sunt doar indexuri/listări. Le folosim să găsim long-tail-uri, nu le salvăm ca tipologii.
     for(const du of (rootLinks.discovery||[]).slice(0,12)){checkBudget();if(visited.has(du))continue;try{const dh=await fetchHtml(du);visited.add(du);pagesDone++;await bumpRun(runId,1);const dl=discoverLinksFromHtml(dh,du,source);for(const u of dl.locations)locationUrls.add(u);for(const [u,h] of dl.detail)if(!detailHints.has(u))detailHints.set(u,h)}catch{pagesFailed++}}
     const sitemapUrls=await discoverSitemaps(source);for(const u of sitemapUrls){if(isLocationUrl(u))locationUrls.add(u);if(isCandidateDetailUrl(u,source.url)&&!detailHints.has(u))detailHints.set(u,null)}
-    const origin=originOf(source.url);for(const p of ['/localizare/','/locatie/','/location/'])locationUrls.add(origin+p);
+    const origin=originOf(source.url),scopePath=scopePathOf(source.url);if(scopePath==='/')for(const p of ['/localizare/','/locatie/','/location/'])locationUrls.add(origin+p);
     let bestLoc=rootLoc;
     for(const lu of [...locationUrls].slice(0,8)){checkBudget();try{const html=await fetchHtml(lu),$=cheerio.load(html),tx=norm($('body').text()).slice(0,100000),loc=findAddressData($,tx,source);if(loc.address||loc.city||loc.zone){bestLoc={...bestLoc,...Object.fromEntries(Object.entries(loc).filter(([,v])=>v!=null))};break}}catch{}}
     await updateSourceMeta(source,{...bestLoc,...visuals});
@@ -545,4 +564,4 @@ const server=http.createServer(async(req,res)=>{const u=new URL(req.url,'http://
 }catch(e){console.error(e);json(res,500,{error:e.message||'Eroare internă'})}});
 
 if(require.main===module){migrate().then(()=>server.listen(PORT,()=>console.log(`AptCompare Build ${BUILD} on ${PORT}`))).catch(e=>{console.error(e);process.exit(1)})}
-module.exports={validTypeName,exactTypeName,parseTypeCode,isCandidateDetailUrl,findAddressData,detailRecord,discoverLinksFromHtml,mergeTypologies,typeKey};
+module.exports={validTypeName,exactTypeName,parseTypeCode,isCandidateDetailUrl,isInSourceScope,scopePathOf,findAddressData,detailRecord,discoverLinksFromHtml,mergeTypologies,typeKey};
