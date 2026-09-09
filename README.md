@@ -1,11 +1,14 @@
-# AptCompare Build 13 — recovery/stable
+# AptCompare Build 14
 
-Acest build revine la parserul stabil din Build 10 și elimină regresiile introduse în Build 11/12.
+Recovery/stability build based on Build 13.
 
-- parserul de tipologii/date este cel din Build 10
-- NU mai face extragerea experimentală din listing care concatena suprafața/statusul în titlu
-- disponibilitatea generică este dezactivată (nu mai deduce Sold Out)
-- păstrează PostgreSQL, Database Admin, sitemap discovery, localizare, scanare paralelă, titluri complete, NARI/vile/case și fallback imagini fără flicker
-- BUILD=13
+Changes in this build:
+- price extraction changed only; title/area/discovery logic kept from Build 13
+- price is accepted from the same listing/card context as the typology when available
+- detail-page price search is restricted to the primary property area and stops before recommendation/similar-property sections
+- amounts associated with parking, garage, storage, design, furniture, deposit, installments, commission, taxes, rent, etc. are rejected as apartment price
+- no global `body` minimum-price selection
+- if no reliable individual price is found, category `de la` fallback remains available; otherwise NA
+- Sold Out remains disabled as a generic inferred availability
 
-Scopul acestui build este recuperarea unei baze funcționale înainte de a reface separat, testat, parserul generic de preț.
+Deploy normally on Render with the existing PostgreSQL DATABASE_URL.

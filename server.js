@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 13;
+const BUILD = 14;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -83,11 +83,80 @@ function parseTypeCode(name) {
   const matches=[...t.matchAll(/\b([A-Z]\d+(?:[-.][A-Z0-9]+)*(?:\s+L\d+)?)\b/g)];
   return matches.length ? norm(matches[matches.length-1][1]) : null;
 }
+function moneyMatches(text) {
+  const t=norm(text), out=[];
+  for(const m of t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)){
+    const value=num(m[1]);
+    if(value>=15000&&value<=5000000) out.push({value,index:m.index||0,raw:norm(m[0])});
+  }
+  return out;
+}
+const PRICE_BAD_CONTEXT=/\b(?:parcare|parking|garaj|box[ăa]|loc(?:ul|uri)?\s+de\s+parcare|design|mobilare|mobilat|mobilier|avans|rat[ăa]|rate|comision|tax[ăa]|chirie|depozit|rezervare)\b/i;
+const PRICE_GOOD_CONTEXT=/\b(?:pre[țt](?:ul)?|price|pre[țt]\s+de\s+la|de\s+la)\b/i;
+
 function parsePrice(text) {
   const t=norm(text);
-  const arr=[...t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)]
-    .map(m=>num(m[1])).filter(n=>n>=15000&&n<=5000000);
-  return arr.length ? Math.min(...arr) : null;
+  if(!t || PRICE_BAD_CONTEXT.test(t)) return null;
+  const arr=moneyMatches(t);
+  if(!arr.length) return null;
+  if(arr.length===1 && (PRICE_GOOD_CONTEXT.test(t) || t.length<=90)) return arr[0].value;
+  return null;
+}
+
+function priceFromElement($, el) {
+  if(!el || !el.length) return null;
+  const text=norm(el.text()).slice(0,500);
+  if(!text || PRICE_BAD_CONTEXT.test(text)) return null;
+  const amounts=moneyMatches(text);
+  if(!amounts.length) return null;
+  const cls=norm((el.attr('class')||'')+' '+(el.attr('id')||''));
+  let score=0;
+  if(/\b(?:price|pret|preț|cost|amount)\b/i.test(cls)) score+=20;
+  if(PRICE_GOOD_CONTEXT.test(text)) score+=14;
+  if(/\+\s*tva|tva\s+(?:inclus|exclus)/i.test(text)) score+=4;
+  if(text.length<=120) score+=6;
+  if(amounts.length===1) score+=5; else score-=8*(amounts.length-1);
+  return {value:amounts[0].value,score,text,vat:parseVat(text)};
+}
+
+function extractPriceFromCard($, anchor) {
+  if(!anchor || !anchor.length) return null;
+  let card=null,node=anchor;
+  for(let i=0;i<7 && node && node.length;i++){
+    const tx=norm(node.text());
+    if(tx.length>=3 && tx.length<=2600 && roomDescriptor(tx)){card=node;break}
+    node=node.parent();
+  }
+  if(!card||!card.length)card=anchor.closest('article,li,[class*="card"],[class*="apart"],[class*="property"],[class*="unit"],[class*="item"],[class*="box"]');
+  if(!card.length)card=anchor.parent();
+  const candidates=[];
+  card.find('[class*="price"],[class*="pret"],[class*="preț"],[id*="price"],[id*="pret"],[id*="preț"]').each((_,e)=>{const c=priceFromElement($,$(e));if(c)candidates.push(c)});
+  card.find('span,p,div,strong,b').each((_,e)=>{const el=$(e),t=norm(el.text());if(t.length>180||!/(?:€|eur(?:o)?\b)/i.test(t))return;const c=priceFromElement($,el);if(c)candidates.push(c)});
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates.length&&candidates[0].score>=10?candidates[0]:null;
+}
+
+function extractPrimaryPrice($) {
+  const h1=$('h1').first();
+  if(!h1.length)return null;
+  const all=$('body *').toArray(),hidx=all.indexOf(h1[0]),candidates=[];
+  const recommendation=/\b(?:alte\s+apartamente|apartamente\s+similare|propriet[ăa][țt]i\s+similare|recomand[ăa]ri|similar\s+(?:apartments|properties)|you\s+may\s+also\s+like)\b/i;
+  let stop=all.length;
+  for(let i=Math.max(0,hidx+1);i<all.length;i++){const el=$(all[i]);if(/^h[1-6]$/i.test(all[i].tagName||'')&&recommendation.test(norm(el.text()))){stop=i;break}}
+  const slice=all.slice(Math.max(0,hidx),Math.min(stop,hidx+700));
+  for(const node of slice){
+    const el=$(node),tag=(node.tagName||'').toLowerCase();
+    if(!['div','span','p','strong','b','li','dd'].includes(tag))continue;
+    const t=norm(el.text());
+    if(!t||t.length>220||!/(?:€|eur(?:o)?\b)/i.test(t)||PRICE_BAD_CONTEXT.test(t))continue;
+    const c=priceFromElement($,el);if(!c)continue;
+    const idx=all.indexOf(node),distance=Math.max(0,idx-hidx);
+    c.score+=Math.max(0,12-Math.floor(distance/20));
+    if(/\b(?:price|pret|preț)\b/i.test(norm((el.attr('class')||'')+' '+(el.attr('id')||''))))c.score+=10;
+    candidates.push(c);
+  }
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates.length&&candidates[0].score>=18?candidates[0]:null;
 }
 function parseVat(text) {
   const t=norm(text);
@@ -247,7 +316,9 @@ function discoverLinksFromHtml(html,base,source){
     href=resolveUrl(href,base);if(!href||!sameHost(href,source.url))return;
     if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);
     if(isCandidateDetailUrl(href,source.url)){
-      const hint=anchor?commercialHintFromAnchor($,anchor,source):null;
+      const titleHint=anchor?commercialHintFromAnchor($,anchor,source):null;
+      const priceHint=anchor?extractPriceFromCard($,anchor):null;
+      const hint=(titleHint||priceHint)?{title:titleHint||null,price:priceHint?.value||null,vat:priceHint?.vat||null}:null;
       if(hint)detail.set(href,hint);else if(!detail.has(href))detail.set(href,null);
     } else if(isDiscoveryUrl(href,label)) discovery.add(href);
   };
@@ -264,7 +335,8 @@ function extractTitle($,source,hint){
   const candidates=[];
   $('h1').each((_,e)=>candidates.push({text:norm($(e).text()),meta:false}));
   $('[class*="property-title"],[class*="apartment-title"],[class*="apartament-title"],[class*="unit-title"],[class*="entry-title"]').slice(0,5).each((_,e)=>candidates.push({text:norm($(e).text()),meta:false}));
-  if(hint)candidates.push({text:hint,meta:false});
+  const hintedTitle=typeof hint==='string'?hint:hint?.title;
+  if(hintedTitle)candidates.push({text:hintedTitle,meta:false});
   candidates.push({text:norm($('meta[property="og:title"]').attr('content')),meta:true},{text:norm($('title').text()),meta:true});
   for(const c of candidates){const t=exactTypeName(c.text,source.name,c.meta);if(validTypeName(t))return t}return null;
 }
@@ -323,12 +395,16 @@ function extractProjectName($,source){
 function detailRecord(html,url,source,ctx={},hint=null){
   const $=cheerio.load(html),title=extractTitle($,source,hint);if(!title)return null;
   let scope=$('h1').first().closest('[class*="apart"],[class*="property"],[class*="detail"],article,main');if(!scope.length)scope=$('main');if(!scope.length)scope=$('body');scope=scope.clone();scope.find('script,style,noscript,svg,nav,footer').remove();const text=norm(scope.text()).slice(0,50000);
-  const rooms=roomCount(title),areas=parseAreas(text),price=parsePrice(text),cat=categoryPriceFor(title,rooms,ctx.categoryPrices||{}),loc=findAddressData($,norm($('body').text()).slice(0,100000),source),detailPhase=phaseFromUrl(url)||ctx.phase||null,detailPhaseStatus=(detailPhase&&ctx.phaseMap?ctx.phaseMap[detailPhase]:null)||ctx.phaseStatus||null;
+  const rooms=roomCount(title),areas=parseAreas(text);
+  const hintedPrice=(hint&&typeof hint==='object'&&hint.price!=null)?{value:hint.price,vat:hint.vat||null}:null;
+  const primaryPrice=hintedPrice||extractPrimaryPrice($);
+  const price=primaryPrice?.value??null;
+  const cat=categoryPriceFor(title,rooms,ctx.categoryPrices||{}),loc=findAddressData($,norm($('body').text()).slice(0,100000),source),detailPhase=phaseFromUrl(url)||ctx.phase||null,detailPhaseStatus=(detailPhase&&ctx.phaseMap?ctx.phaseMap[detailPhase]:null)||ctx.phaseStatus||null;
   const project=extractProjectName($,source);
   // Pentru surse multi-proiect (Alera), un record fără proiect explicit este nesigur și este respins.
   if(/aleraproperties\.ro$/i.test(hostOf(source.url))&&!project)return null;
   const pv=extractVisuals(html,url);
-  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:null,phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
+  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?(primaryPrice?.vat||null):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:null,phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
 }
 function typeKey(x){return slug(x.project||'')+'::'+slug(x.type_name)}
 function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone','project_image_url','project_logo_url'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
