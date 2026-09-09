@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 6;
+const BUILD = 7;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -66,9 +66,15 @@ function exactTypeName(s, sourceName='', fromMeta=false) {
 function validTypeName(t) {
   t = norm(t);
   if (!t || t.length < 6 || t.length > 180 || isGenericTypeName(t)) return false;
-  if (!/\b(?:apartament|studio|garsonier|duplex|penthouse|vil[ăa])\b/i.test(t)) return false;
-  // A real commercial name needs something beyond the generic dwelling category.
-  return /\b(?:tip\s+)?[A-ZĂÂÎȘȚ]?[0-9]{1,3}(?:[-.][A-Z0-9]+)*\b/i.test(t) || /\b(?:camere|camera)\b/i.test(t) && t.split(/\s+/).length >= 4 || t.split(/\s+/).length >= 3;
+  // Acceptăm titlul comercial complet, inclusiv cazurile în care site-ul îl scrie
+  // ca „2 camere Torino”, fără cuvântul „Apartament”.
+  const hasDwelling = /\b(?:apartament|studio|garsonier|duplex|penthouse|vil[ăa]|[1-6]\s*(?:camere|camera))\b/i.test(t);
+  if (!hasDwelling) return false;
+  const words=t.split(/\s+/).filter(Boolean);
+  const hasCode=/\b(?:tip\s+)?[A-ZĂÂÎȘȚ]?[0-9]{1,3}(?:[-.][A-Z0-9]+)*(?:\s+L\d+)?\b/i.test(t);
+  const roomPlusName=/\b[1-6]\s*(?:camere|camera)\b/i.test(t) && words.length>=3;
+  const namedCategory=/\b(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])\b/i.test(t) && words.length>=2;
+  return hasCode || roomPlusName || namedCategory || words.length>=3;
 }
 function parseTypeCode(name) {
   const t = norm(name);
@@ -159,7 +165,45 @@ async function discoverSitemaps(source){
   }
   return [...urls];
 }
-function discoverLinksFromHtml(html,base,source){const $=cheerio.load(html),detail=new Map(),locations=new Set();$('a[href]').each((_,el)=>{const a=$(el),href=resolveUrl(a.attr('href'),base);if(!href||!sameHost(href,source.url))return;const label=norm(a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').first().text())||norm(a.text());if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);if(isCandidateDetailUrl(href,source.url)){const exact=exactTypeName(label,source.name,false);if(validTypeName(exact))detail.set(href,exact);else if(!detail.has(href))detail.set(href,null)}});return{detail,locations:[...locations]}}
+function roomDescriptor(text){
+  const t=norm(text);
+  const m=t.match(/\b([1-6])\s*(camere|camera)(?:\s*\+\s*birou)?\b/i);
+  if(m)return norm(m[0]);
+  const c=t.match(/\b(garsonier[ăa]?|studio|duplex|penthouse|vil[ăa])\b/i);
+  return c?norm(c[0]):null;
+}
+function commercialHintFromAnchor($,a,source){
+  // 1) Dacă ancora/cardul conține deja titlul complet, îl păstrăm literal.
+  const direct=[];
+  a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{const t=exactTypeName($(e).text(),source.name,false);if(t)direct.push(t)});
+  const self=exactTypeName(a.text(),source.name,false);if(self)direct.push(self);
+  for(const t of direct)if(validTypeName(t))return t;
+
+  // 2) Unele template-uri (ex. PRIMA) țin „2 camere” și „Torino” în noduri separate.
+  // Construim titlul comercial din ACEEAȘI carte, fără să luăm date de la vecini.
+  let card=a.closest('article,li,[class*="card"],[class*="apart"],[class*="property"],[class*="unit"],[class*="item"],[class*="box"]');
+  if(!card.length)card=a.parent();
+  const cardText=norm(card.text()).slice(0,1800),desc=roomDescriptor(cardText);
+  if(!desc)return null;
+  const bad=/^(?:home|despre noi|sold out|disponibil|află mai multe|afla mai multe|detalii|vezi|descoperă|descopera|solicită|solicita|economisești|economisesti|preț|pret|în complexul|in complexul)$/i;
+  let name=null;
+  card.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{
+    if(name)return;const t=norm($(e).text());if(!t||t.length>100||bad.test(t))return;
+    if(/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(t)||/^(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])$/i.test(t))return;
+    if(/^(?:în|in)\s+complexul/i.test(t)||/^(?:preț|pret)\s+de\s+la/i.test(t)||/^(?:disponibil|sold)/i.test(t))return;
+    if(normalizeProjectish(t)===normalizeProjectish(source.name))return;
+    name=t;
+  });
+  if(!name){
+    // fallback pentru linkuri al căror text este doar numele comercial
+    const t=norm(a.text());if(t&&t.length<100&&!bad.test(t)&&!/^([1-6])\s*(?:camere|camera)$/i.test(t))name=t;
+  }
+  if(!name)return null;
+  const built=norm(`${desc} ${name}`);
+  return validTypeName(built)?built:null;
+}
+function normalizeProjectish(s){return slug(s).replace(/(?:residence|residential|development|group|oradea|city)$/g,'')}
+function discoverLinksFromHtml(html,base,source){const $=cheerio.load(html),detail=new Map(),locations=new Set();$('a[href]').each((_,el)=>{const a=$(el),href=resolveUrl(a.attr('href'),base);if(!href||!sameHost(href,source.url))return;const label=norm(a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').first().text())||norm(a.text());if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);if(isCandidateDetailUrl(href,source.url)){const hint=commercialHintFromAnchor($,a,source);if(hint)detail.set(href,hint);else if(!detail.has(href))detail.set(href,null)}});return{detail,locations:[...locations]}}
 function extractTitle($,source,hint){
   const candidates=[];
   $('h1').each((_,e)=>candidates.push({text:norm($(e).text()),meta:false}));
@@ -169,10 +213,15 @@ function extractTitle($,source,hint){
   for(const c of candidates){const t=exactTypeName(c.text,source.name,c.meta);if(validTypeName(t))return t}return null;
 }
 function extractProjectName($,source){
-  if(source.id!=='alera')return source.name;
   let project=null;
-  $('a[href*="/proiect/"]').each((_,e)=>{const t=norm($(e).text());if(!project&&t.length>=3&&t.length<100&&!/^proiect/i.test(t))project=t});
-  if(!project){const body=norm($('body').text()).slice(0,18000);const m=body.match(/(?:Proiect|Ansamblu)\s*[:\-]\s*([A-ZĂÂÎȘȚ][^|•\n]{3,90})/i);if(m)project=norm(m[1])}
+  const body=norm($('body').text()).slice(0,30000);
+  // Template-urile rezidențiale expun frecvent exact „În complexul: NUME PROIECT”.
+  let m=body.match(/(?:În|In)\s+complexul\s*:\s*([A-ZĂÂÎȘȚ0-9][A-Za-zĂÂÎȘȚăâîșț0-9 .&'’\-]{2,80}?)(?=\s+(?:Preț|Pret|Suprafa|Sold|Disponibil|Solicit|Image|$))/i);
+  if(m)project=norm(m[1]);
+  if(!project){
+    $('a[href*="/proiect/"],a[href*="/project/"]').each((_,e)=>{const t=norm($(e).text());if(!project&&t.length>=3&&t.length<100&&!/^proiect/i.test(t))project=t});
+  }
+  if(!project){m=body.match(/(?:Proiect|Ansamblu)\s*[:\-]\s*([A-ZĂÂÎȘȚ][^|•]{3,90}?)(?=\s{2,}|Preț|Pret|Suprafa|$)/i);if(m)project=norm(m[1])}
   return project||source.name;
 }
 function detailRecord(html,url,source,ctx={},hint=null){

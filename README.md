@@ -1,6 +1,6 @@
-# AptCompare — Build 6
+# AptCompare — Build 7
 
-Build 6 schimbă fundamental logica crawlerului pentru a evita rezultatele generice.
+Build 7 schimbă fundamental logica crawlerului pentru a evita rezultatele generice.
 
 ## Ce este nou
 
@@ -16,7 +16,7 @@ Build 6 schimbă fundamental logica crawlerului pentru a evita rezultatele gener
 
 ## Deploy pe Render
 
-1. Înlocuiește fișierele proiectului cu Build 6.
+1. Înlocuiește fișierele proiectului cu Build 7.
 2. Păstrează aceeași variabilă `DATABASE_URL`.
 3. Deploy normal. Migrarea adaugă automat coloanele noi `city` și `zone` în `typologies`.
 4. Pentru un test curat: `Surse` → `Database Admin` → `Golește toate datele scanate`, apoi rescanează sursele.
@@ -26,3 +26,12 @@ Build 6 schimbă fundamental logica crawlerului pentru a evita rezultatele gener
 - Build Command: `npm install`
 - Start Command: `npm start`
 - Node: 20+
+
+
+## Build 7 fixes
+- Filtrul Număr camere pornește pe „Toate”; resetul revine la „Toate”.
+- Filtrele de buget/suprafață pornesc neutru (500.000 € / 25 mp), ca rezultatele să nu fie ascunse imediat după scanare.
+- Parserul acceptă titluri comerciale împărțite în card (ex. „2 camere” + „Torino”) și le păstrează ca titlu lung „2 camere Torino”.
+- Pentru site-urile unde titlul complet există deja (ex. „Garsonieră A9-P”), acesta are prioritate și este păstrat literal.
+- Paginile generale rămân discovery-only; URL-ul final salvat este pagina long-tail a tipologiei.
+- Detectarea proiectului nu mai este limitată la Alera; caută și „În complexul: …”.

@@ -39,22 +39,23 @@
 
     <div class="field-label">Număr camere</div>
     <div class="room-picker" id="roomPicker">
+      <button type="button" data-rooms="all" class="active">Toate</button>
       <button type="button" data-rooms="1">1</button>
-      <button type="button" data-rooms="2" class="active">2</button>
+      <button type="button" data-rooms="2">2</button>
       <button type="button" data-rooms="3">3</button>
       <button type="button" data-rooms="4">4+</button>
     </div>
 
     <div class="range-field">
       <div class="field-label">Buget maxim (€)</div>
-      <input id="maxPrice" type="range" min="80000" max="500000" step="5000" value="250000">
-      <div class="range-values"><span>80.000</span><strong id="maxPriceValue">250.000</strong><span>500.000+</span></div>
+      <input id="maxPrice" type="range" min="80000" max="500000" step="5000" value="500000">
+      <div class="range-values"><span>80.000</span><strong id="maxPriceValue">500.000</strong><span>500.000+</span></div>
     </div>
 
     <div class="range-field">
       <div class="field-label">Suprafață utilă minimă (mp)</div>
-      <input id="minArea" type="range" min="25" max="180" step="1" value="45">
-      <div class="range-values"><span>25</span><strong id="minAreaValue">45 mp</strong><span>180+</span></div>
+      <input id="minArea" type="range" min="25" max="180" step="1" value="25">
+      <div class="range-values"><span>25</span><strong id="minAreaValue">25 mp</strong><span>180+</span></div>
     </div>
 
     <div class="field-label">Status</div>
