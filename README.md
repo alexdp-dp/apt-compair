@@ -1,11 +1,15 @@
-# AptCompare Build 8
+# AptCompare Build 9
 
-Build 8 core fixes:
+Stability build.
 
-- Full commercial typology names across all sources. Split card labels are concatenated from the same card (example: `2 camere + birou` + `Bonn` => `2 camere + birou Bonn`).
-- Alera multi-project attribution fixed: project is extracted from the property content, never from the global navigation menu. Alera records without an explicit project are rejected rather than guessed.
-- Project-level visual extraction from detail pages. Stable fallback: project image -> project/source logo -> static initials; broken images do not loop/flicker.
-- Existing sitemap discovery, localization-page parsing, admin DB clear controls, and `Toate` room filter retained.
-- PostgreSQL migration adds `project_image_url` and `project_logo_url` automatically.
+- fixes PostgreSQL INSERT mismatch that prevented all discovered typologies from being saved;
+- scans up to 5 detail pages in parallel per source;
+- scans up to 4 sources in parallel so one slow developer no longer blocks the entire batch;
+- 12s request timeout + 6 minute controlled per-source budget; failed pages are counted and the scan continues;
+- interrupted stale scans are marked as errors after restart/deploy instead of remaining stuck forever;
+- image cards are NOT rerendered every second while scan status is polled, eliminating hero/logo refresh flicker;
+- stable hero -> logo -> static initials fallback remains;
+- HILS project URLs such as /nord/ are recognized as HILS Nord;
+- all Build 8 rules remain: long-tail typologies only, full commercial titles, sitemap discovery, Localizare/Locație, multi-project Alera, Database Admin, room filter 'Toate'.
 
-Deploy normally on Render with Node 20+ and the existing DATABASE_URL.
+Deploy normally on Render. Existing PostgreSQL schema/data is migrated in place.

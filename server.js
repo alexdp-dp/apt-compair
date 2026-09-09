@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 8;
+const BUILD = 9;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -147,7 +147,7 @@ function isLikelyLogo(url,text=''){return /(?:logo|favicon|icon|brand|cropped)/i
 function extractVisuals(html,url){const $=cheerio.load(html);let image=null,logo=null;for(const sel of ['[class*="hero"] img','[class*="banner"] img','[class*="slider"] img','[class*="cover"] img','main figure img','main img']){for(const el of $(sel).toArray()){const u=imageSrc($,$(el),url);if(u&&!isLikelyLogo(u,($(el).attr('class')||'')+' '+($(el).attr('alt')||''))){image=u;break}}if(image)break}const og=resolveUrl($('meta[property="og:image"]').attr('content')||$('meta[name="twitter:image"]').attr('content'),url);if(!image&&og&&!isLikelyLogo(og))image=og;const le=$('img[class*="logo"],header img[alt*="logo" i],header img').first();logo=imageSrc($,le,url);if(!logo&&og&&isLikelyLogo(og))logo=og;return{image,logo}}
 
 async function fetchText(url, accept='text/html,application/xhtml+xml,application/xml,text/xml;q=0.9,*/*;q=0.5'){
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),18000);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
   try{const r=await fetch(url,{redirect:'follow',signal:controller.signal,headers:{'user-agent':`Mozilla/5.0 (compatible; AptCompare/${BUILD}.0; +https://digitalpartners.ro)`,'accept-language':'ro-RO,ro;q=0.9,en;q=0.7','accept':accept}});if(!r.ok)throw new Error(`HTTP ${r.status} ${url}`);return {text:await r.text(),contentType:r.headers.get('content-type')||'',url:r.url||url}}finally{clearTimeout(timer)}
 }
 async function fetchHtml(url){const r=await fetchText(url);if(!/html/i.test(r.contentType)&&!/<(?:html|body|head)[\s>]/i.test(r.text.slice(0,1000)))throw new Error('Nu este HTML');return r.text}
@@ -229,6 +229,12 @@ function extractProjectName($,source){
   let project=null;
   const hostname=hostOf(source.url);
 
+  // HILS folosește proiectul în primul segment al URL-ului (ex. /nord/).
+  // Paginile long-tail sunt /nord/apartament/..., deci nu lăsăm proiectul ca simplul hostname.
+  if(/(?:^|\.)hils\.ro$/i.test(hostname)){
+    try{const seg=new URL(source.url).pathname.split('/').filter(Boolean)[0];if(seg)return `HILS ${seg.charAt(0).toUpperCase()+seg.slice(1)}`}catch{}
+  }
+
   // Alera este un portofoliu cu MAI MULTE proiecte sub aceeași sursă.
   // Nu căutăm niciodată în header/nav, fiindcă primul link din meniu este
   // Central Address Residence și contamina toate proprietățile.
@@ -294,6 +300,10 @@ async function migrate(){if(!pool)return;
   await db(`CREATE TABLE IF NOT EXISTS price_history (id BIGSERIAL PRIMARY KEY,typology_id BIGINT NOT NULL REFERENCES typologies(id) ON DELETE CASCADE,price_min NUMERIC,price_max NUMERIC,observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await db(`CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY,kind TEXT NOT NULL,status TEXT NOT NULL,total_sources INTEGER NOT NULL DEFAULT 0,completed_sources INTEGER NOT NULL DEFAULT 0,pages_scanned INTEGER NOT NULL DEFAULT 0,types_found INTEGER NOT NULL DEFAULT 0,started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),finished_at TIMESTAMPTZ,error TEXT)`);
   await db(`CREATE TABLE IF NOT EXISTS scan_source_runs (run_id TEXT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,source_name TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',pages_scanned INTEGER NOT NULL DEFAULT 0,pages_total INTEGER NOT NULL DEFAULT 0,types_found INTEGER NOT NULL DEFAULT 0,current_url TEXT,error TEXT,started_at TIMESTAMPTZ,finished_at TIMESTAMPTZ,PRIMARY KEY(run_id,source_id))`);
+  await db(`ALTER TABLE scan_source_runs ADD COLUMN IF NOT EXISTS pages_failed INTEGER NOT NULL DEFAULT 0`);
+  // A deploy/restart can kill a background scan. Never leave the UI stuck forever on "running".
+  await db(`UPDATE scan_source_runs SET status='error',error=COALESCE(error,'Scanare întreruptă de restart/deploy'),current_url=NULL,finished_at=NOW() WHERE status IN ('queued','scanning') AND run_id IN (SELECT id FROM scan_runs WHERE status='running' AND started_at < NOW() - INTERVAL '20 minutes')`);
+  await db(`UPDATE scan_runs SET status='error',error=COALESCE(error,'Scanare întreruptă de restart/deploy'),finished_at=NOW() WHERE status='running' AND started_at < NOW() - INTERVAL '20 minutes'`);
   for(const s of seedSources)await db(`INSERT INTO sources(id,name,url,enabled,city,zone) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`,[s.id,s.name,s.url,s.enabled,s.city||null,s.zone||null]);
   await db(`UPDATE sources SET url='https://estoriacity-rezidential.ro/faza-3/',updated_at=NOW() WHERE id='estoria' AND url <> 'https://estoriacity-rezidential.ro/faza-3/'`);
 }
@@ -308,7 +318,7 @@ async function replaceTypologiesAtomic(source,found){
   const client=await pool.connect();
   try{await client.query('BEGIN');const oldRows=(await client.query(`SELECT id,type_key,price_min,price_max FROM typologies WHERE source_id=$1`,[source.id])).rows;const oldMap=new Map(oldRows.map(r=>[r.type_key,r]));const seen=[];
     for(const x of found){const k=typeKey(x);seen.push(k);const r=await client.query(`INSERT INTO typologies(source_id,type_key,developer,project,type_name,type_code,rooms,price_min,price_max,vat,category_price_from,category_vat,useful_area,total_area,built_area,terrace_area,availability,phase,phase_status,address,city,zone,facilities,source_url,project_image_url,project_logo_url,observed_count,confidence,last_seen_at,is_current)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb,$24,$25,$26,NOW(),TRUE)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb,$24,$25,$26,$27,$28,NOW(),TRUE)
       ON CONFLICT(source_id,type_key) DO UPDATE SET developer=EXCLUDED.developer,project=EXCLUDED.project,type_name=EXCLUDED.type_name,type_code=EXCLUDED.type_code,rooms=EXCLUDED.rooms,price_min=EXCLUDED.price_min,price_max=EXCLUDED.price_max,vat=EXCLUDED.vat,category_price_from=EXCLUDED.category_price_from,category_vat=EXCLUDED.category_vat,useful_area=EXCLUDED.useful_area,total_area=EXCLUDED.total_area,built_area=EXCLUDED.built_area,terrace_area=EXCLUDED.terrace_area,availability=EXCLUDED.availability,phase=EXCLUDED.phase,phase_status=EXCLUDED.phase_status,address=COALESCE(EXCLUDED.address,typologies.address),city=COALESCE(EXCLUDED.city,typologies.city),zone=COALESCE(EXCLUDED.zone,typologies.zone),source_url=EXCLUDED.source_url,project_image_url=COALESCE(EXCLUDED.project_image_url,typologies.project_image_url),project_logo_url=COALESCE(EXCLUDED.project_logo_url,typologies.project_logo_url),observed_count=EXCLUDED.observed_count,confidence=EXCLUDED.confidence,last_seen_at=NOW(),is_current=TRUE RETURNING id,price_min,price_max`,
       [source.id,k,x.developer,x.project,x.type_name,x.type_code,x.rooms,x.price_min,x.price_max,x.vat,x.category_price_from,x.category_vat,x.useful_area,x.total_area,x.built_area,x.terrace_area,x.availability,x.phase,x.phase_status,x.address,x.city,x.zone,JSON.stringify(x.facilities||[]),x.source_url,x.project_image_url,x.project_logo_url,x.observed_count||1,x.confidence||0]);
       const cur=r.rows[0],old=oldMap.get(k),changed=!old||String(old.price_min??'')!==String(cur.price_min??'')||String(old.price_max??'')!==String(cur.price_max??'');if(changed&&(cur.price_min!=null||cur.price_max!=null))await client.query(`INSERT INTO price_history(typology_id,price_min,price_max) VALUES($1,$2,$3)`,[cur.id,cur.price_min,cur.price_max]);
@@ -318,25 +328,72 @@ async function replaceTypologiesAtomic(source,found){
 }
 
 async function scanOneSource(runId,source){
-  await setSourceProgress(runId,source.id,{status:'scanning',started_at:new Date(),current_url:source.url});const collected=[],visited=new Set(),detailHints=new Map(),locationUrls=new Set();
+  await setSourceProgress(runId,source.id,{status:'scanning',started_at:new Date(),current_url:source.url,pages_failed:0});
+  const collected=[],visited=new Set(),detailHints=new Map(),locationUrls=new Set();
+  let pagesDone=0,pagesFailed=0;
+  const started=Date.now(), SOURCE_BUDGET_MS=6*60*1000;
+  const checkBudget=()=>{if(Date.now()-started>SOURCE_BUDGET_MS)throw new Error('Scanarea sursei a depășit 6 minute și a fost oprită controlat; datele vechi au fost păstrate.')};
   try{
-    const rootHtml=await fetchHtml(source.url);visited.add(source.url);await bumpRun(runId,1);const root$=cheerio.load(rootHtml),rootText=norm(root$('body').text()).slice(0,180000),phaseMap=parsePhaseMap(rootText),phase=phaseFromUrl(source.url),phaseStatus=phase?(phaseMap[phase]||null):null,categoryPrices=parseCategoryPrices(rootText),ctx={pageUrl:source.url,phase,phaseStatus,phaseMap,categoryPrices};
+    checkBudget();
+    const rootHtml=await fetchHtml(source.url);visited.add(source.url);pagesDone=1;await bumpRun(runId,1);
+    const root$=cheerio.load(rootHtml),rootText=norm(root$('body').text()).slice(0,180000),phaseMap=parsePhaseMap(rootText),phase=phaseFromUrl(source.url),phaseStatus=phase?(phaseMap[phase]||null):null,categoryPrices=parseCategoryPrices(rootText),ctx={pageUrl:source.url,phase,phaseStatus,phaseMap,categoryPrices};
     const visuals=extractVisuals(rootHtml,source.url),rootLoc=findAddressData(root$,rootText,source),rootLinks=discoverLinksFromHtml(rootHtml,source.url,source);for(const u of rootLinks.locations)locationUrls.add(u);for(const [u,h] of rootLinks.detail)detailHints.set(u,h);
     const sitemapUrls=await discoverSitemaps(source);for(const u of sitemapUrls){if(isLocationUrl(u))locationUrls.add(u);if(isCandidateDetailUrl(u,source.url)&&!detailHints.has(u))detailHints.set(u,null)}
-    // Explicitly prioritize the dedicated localization page.
     const origin=originOf(source.url);for(const p of ['/localizare/','/locatie/','/location/'])locationUrls.add(origin+p);
     let bestLoc=rootLoc;
-    for(const lu of [...locationUrls].slice(0,8)){try{const html=await fetchHtml(lu),$=cheerio.load(html),tx=norm($('body').text()).slice(0,100000),loc=findAddressData($,tx,source);if(loc.address||loc.city||loc.zone){bestLoc={...bestLoc,...Object.fromEntries(Object.entries(loc).filter(([,v])=>v!=null))};break}}catch{}}
+    for(const lu of [...locationUrls].slice(0,8)){checkBudget();try{const html=await fetchHtml(lu),$=cheerio.load(html),tx=norm($('body').text()).slice(0,100000),loc=findAddressData($,tx,source);if(loc.address||loc.city||loc.zone){bestLoc={...bestLoc,...Object.fromEntries(Object.entries(loc).filter(([,v])=>v!=null))};break}}catch{}}
     await updateSourceMeta(source,{...bestLoc,...visuals});
-    const urls=[...detailHints.keys()].filter(u=>u!==source.url).slice(0,180);await setSourceProgress(runId,source.id,{pages_scanned:1,pages_total:urls.length+1,current_url:source.url,types_found:0});
-    for(const url of urls){if(visited.has(url))continue;visited.add(url);await setSourceProgress(runId,source.id,{current_url:url,pages_scanned:visited.size,pages_total:urls.length+1,types_found:mergeTypologies(collected).length});try{const html=await fetchHtml(url),rec=detailRecord(html,url,source,ctx,detailHints.get(url));if(rec)collected.push(rec);if(visited.size<45){const more=discoverLinksFromHtml(html,url,source);for(const [u,h] of more.detail)if(!detailHints.has(u)&&detailHints.size<220)detailHints.set(u,h)}}catch{}await bumpRun(runId,1)}
-    // A few sites expose long-tail cards only from the catalogue and hide them from XML. Follow newly found detail URLs once.
-    for(const [url,hint] of [...detailHints.entries()].slice(urls.length,220)){if(visited.has(url))continue;visited.add(url);try{const html=await fetchHtml(url),rec=detailRecord(html,url,source,ctx,hint);if(rec)collected.push(rec)}catch{}await bumpRun(runId,1)}
-    const merged=mergeTypologies(collected);await replaceTypologiesAtomic(source,merged);await db(`UPDATE sources SET last_scanned_at=NOW(),updated_at=NOW() WHERE id=$1`,[source.id]);
-    await setSourceProgress(runId,source.id,{status:'completed',pages_scanned:visited.size,pages_total:visited.size,types_found:merged.length,current_url:null,finished_at:new Date()});await db(`UPDATE scan_runs SET completed_sources=completed_sources+1,types_found=types_found+$2 WHERE id=$1`,[runId,merged.length]);
-  }catch(e){await setSourceProgress(runId,source.id,{status:'error',error:e.message,current_url:null,finished_at:new Date()});await db(`UPDATE scan_runs SET completed_sources=completed_sources+1 WHERE id=$1`,[runId])}
+
+    const processEntries=async(entries,discoverMore=false)=>{
+      let next=0,finished=0;
+      const workers=Array.from({length:Math.min(5,entries.length||1)},async()=>{
+        while(true){
+          checkBudget();
+          const i=next++; if(i>=entries.length)return;
+          const [url,hint]=entries[i];
+          if(visited.has(url)){finished++;continue}
+          visited.add(url);
+          await setSourceProgress(runId,source.id,{current_url:url,pages_scanned:pagesDone,pages_total:Math.max(pagesDone+entries.length-finished,visited.size),types_found:mergeTypologies(collected).length,pages_failed:pagesFailed});
+          try{
+            const html=await fetchHtml(url),rec=detailRecord(html,url,source,ctx,hint);if(rec)collected.push(rec);
+            if(discoverMore&&visited.size<70){const more=discoverLinksFromHtml(html,url,source);for(const [u,h] of more.detail)if(!detailHints.has(u)&&detailHints.size<240)detailHints.set(u,h)}
+          }catch(e){pagesFailed++}
+          pagesDone++;finished++;await bumpRun(runId,1);
+          await setSourceProgress(runId,source.id,{pages_scanned:pagesDone,types_found:mergeTypologies(collected).length,pages_failed:pagesFailed});
+        }
+      });
+      await Promise.all(workers);
+    };
+
+    const first=[...detailHints.entries()].filter(([u])=>u!==source.url).slice(0,180);
+    await setSourceProgress(runId,source.id,{pages_scanned:pagesDone,pages_total:pagesDone+first.length,current_url:source.url,types_found:0,pages_failed:0});
+    await processEntries(first,true);
+
+    const extra=[...detailHints.entries()].filter(([u])=>u!==source.url&&!visited.has(u)).slice(0,60);
+    if(extra.length){await setSourceProgress(runId,source.id,{pages_total:pagesDone+extra.length});await processEntries(extra,false)}
+
+    const merged=mergeTypologies(collected);
+    await replaceTypologiesAtomic(source,merged);
+    await db(`UPDATE sources SET last_scanned_at=NOW(),updated_at=NOW() WHERE id=$1`,[source.id]);
+    await setSourceProgress(runId,source.id,{status:'completed',pages_scanned:pagesDone,pages_total:pagesDone,types_found:merged.length,pages_failed:pagesFailed,current_url:null,finished_at:new Date(),error:pagesFailed?`${pagesFailed} pagini nu au răspuns; scanarea a continuat.`:null});
+    await db(`UPDATE scan_runs SET completed_sources=completed_sources+1,types_found=types_found+$2 WHERE id=$1`,[runId,merged.length]);
+  }catch(e){
+    await setSourceProgress(runId,source.id,{status:'error',error:e.message,current_url:null,pages_scanned:pagesDone,pages_failed:pagesFailed,finished_at:new Date()});
+    await db(`UPDATE scan_runs SET completed_sources=completed_sources+1 WHERE id=$1`,[runId]);
+  }
 }
-async function executeRun(runId,ids){try{const ss=(await sourceList()).filter(s=>ids.includes(s.id));for(const s of ss)await scanOneSource(runId,s);await db(`UPDATE scan_runs SET status='completed',finished_at=NOW() WHERE id=$1`,[runId])}catch(e){await db(`UPDATE scan_runs SET status='error',error=$2,finished_at=NOW() WHERE id=$1`,[runId,e.message])}}
+
+async function executeRun(runId,ids){
+  try{
+    const ss=(await sourceList()).filter(s=>ids.includes(s.id));
+    // Max. 4 surse simultan: un site lent sau blocat nu mai ține toate celelalte surse în coadă.
+    let next=0;
+    const workers=Array.from({length:Math.min(4,ss.length||1)},async()=>{while(true){const i=next++;if(i>=ss.length)return;await scanOneSource(runId,ss[i])}});
+    await Promise.all(workers);
+    const failed=Number((await db(`SELECT COUNT(*)::int AS n FROM scan_source_runs WHERE run_id=$1 AND status='error'`,[runId])).rows[0]?.n||0);
+    await db(`UPDATE scan_runs SET status=$2,finished_at=NOW(),error=$3 WHERE id=$1`,[runId,failed?'completed_with_errors':'completed',failed?`${failed} surse au terminat cu eroare`:null]);
+  }catch(e){await db(`UPDATE scan_runs SET status='error',error=$2,finished_at=NOW() WHERE id=$1`,[runId,e.message])}
+}
 async function createRun(ids,kind){const unique=[...new Set(ids)],sources=(await sourceList()).filter(s=>unique.includes(s.id));if(!sources.length)throw new Error('Nu ai selectat nicio sursă');const id=crypto.randomUUID();await db(`INSERT INTO scan_runs(id,kind,status,total_sources) VALUES($1,$2,'running',$3)`,[id,kind,sources.length]);for(const s of sources)await db(`INSERT INTO scan_source_runs(run_id,source_id,source_name,status) VALUES($1,$2,$3,'queued')`,[id,s.id,s.name]);setImmediate(()=>executeRun(id,sources.map(s=>s.id)));return id}
 async function getRun(id){const run=(await db(`SELECT * FROM scan_runs WHERE id=$1`,[id])).rows[0];if(!run)return null;run.sources=(await db(`SELECT * FROM scan_source_runs WHERE run_id=$1 ORDER BY started_at NULLS LAST,source_name`,[id])).rows;return run}
 function json(res,status,obj){const b=JSON.stringify(obj);res.writeHead(status,{'content-type':'application/json; charset=utf-8','content-length':Buffer.byteLength(b),'cache-control':'no-store'});res.end(b)}
