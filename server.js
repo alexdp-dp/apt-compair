@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 12;
+const BUILD = 13;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -85,25 +85,9 @@ function parseTypeCode(name) {
 }
 function parsePrice(text) {
   const t=norm(text);
-  const bad=/\b(?:parcare|parking|loc(?:ul)?\s+de\s+parcare|garaj|garage|box[ăa]|storage|design|mobilare|mobilat|mobilier|furniture|comision|commission|avans|down\s*payment|rat[ăaei]|rate|lunar|monthly|chirie|rent|tax[ăa]|fee|notar|notarial)\b/i;
-  const good=/\b(?:pre[țt](?:ul|uri)?|price|valoare|v[aâ]nzare|sale|de\s+la)\b/i;
-  const found=[];
-  for(const m of t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)){
-    const value=num(m[1]); if(value==null||value<5000||value>5000000)continue;
-    const i=m.index||0, ctx=t.slice(Math.max(0,i-140),Math.min(t.length,i+m[0].length+140));
-    let score=0;
-    if(good.test(ctx)) score+=8;
-    if(/\+\s*tva|tva\s*(?:inclus|included)/i.test(ctx)) score+=2;
-    if(/^\s*de\s+la/i.test(m[0])) score+=1;
-    if(bad.test(ctx)) score-=25;
-    if(value<30000) score-=4;
-    found.push({value,score,i});
-  }
-  if(!found.length)return null;
-  found.sort((a,b)=>b.score-a.score || b.value-a.value || a.i-b.i);
-  const best=found[0];
-  if(found.length===1 && best.score>-20)return best.value;
-  return best.score>=1 ? best.value : null;
+  const arr=[...t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)]
+    .map(m=>num(m[1])).filter(n=>n>=15000&&n<=5000000);
+  return arr.length ? Math.min(...arr) : null;
 }
 function parseVat(text) {
   const t=norm(text);
@@ -276,45 +260,6 @@ function discoverLinksFromHtml(html,base,source){
   }
   return{detail,locations:[...locations],discovery:[...discovery]};
 }
-
-function listingRecordsFromHtml(html,base,source,ctx={}){
-  const $=cheerio.load(html), out=[];
-  $('a[href]').each((_,el)=>{
-    const a=$(el), href=resolveUrl(a.attr('href'),base);
-    if(!href||!sameHost(href,source.url)||!isCandidateDetailUrl(href,source.url))return;
-    const hint=commercialHintFromAnchor($,a,source); if(!hint)return;
-    let card=a.closest('article,li,[class*="card"],[class*="apart"],[class*="property"],[class*="unit"],[class*="item"],[class*="box"],[class*="room"]');
-    if(!card.length){
-      let n=a;
-      for(let i=0;i<6&&n.length;i++,n=n.parent()){
-        const tx=norm(n.text());
-        if(tx.length>=20&&tx.length<=3500&&(roomDescriptor(tx)||/(?:€|eur\b|m²|mp\b)/i.test(tx))){card=n;break}
-      }
-    }
-    if(!card.length)return;
-    const clean=card.clone(); clean.find('script,style,noscript,svg,nav,footer').remove();
-    const text=norm(clean.text()).slice(0,6000);
-    const rooms=roomCount(hint),areas=parseAreas(text),price=parsePrice(text),cat=categoryPriceFor(hint,rooms,ctx.categoryPrices||{});
-    let project=null;
-    const projLink=card.find('a[href*="/proiect/"],a[href*="/project/"]').filter((_,e)=>e!==el).first();
-    if(projLink.length){const pt=norm(projLink.text());if(pt&&pt.length<120&&!/^proiect/i.test(pt))project=pt}
-    out.push({
-      source_id:source.id,developer:source.name,project:project||source.name,
-      type_name:hint,type_code:parseTypeCode(hint),rooms,
-      price_min:price,price_max:null,vat:price?parseVat(text):null,
-      category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),
-      useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,
-      availability:null,phase:phaseFromUrl(href)||ctx.phase||null,
-      phase_status:(phaseFromUrl(href)&&ctx.phaseMap?ctx.phaseMap[phaseFromUrl(href)]:null)||ctx.phaseStatus||null,
-      address:null,city:null,zone:null,facilities:[],source_url:href,
-      project_image_url:null,project_logo_url:null,
-      confidence:[hint,rooms,areas.useful||areas.total||areas.built,price||cat?.price].filter(v=>v!=null).length,
-      _from_listing:true
-    });
-  });
-  return out;
-}
-
 function extractTitle($,source,hint){
   const candidates=[];
   $('h1').each((_,e)=>candidates.push({text:norm($(e).text()),meta:false}));
@@ -386,7 +331,7 @@ function detailRecord(html,url,source,ctx={},hint=null){
   return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:null,phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
 }
 function typeKey(x){return slug(x.project||'')+'::'+slug(x.type_name)}
-function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone','project_image_url','project_logo_url'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if((!out.project||normalizeProjectish(out.project)===normalizeProjectish(out.developer))&&b.project&&normalizeProjectish(b.project)!==normalizeProjectish(b.developer))out.project=b.project;if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
+function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone','project_image_url','project_logo_url'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
 function urlScore(u){try{const p=new URL(u).pathname;return p.split('/').filter(Boolean).length*100+p.length}catch{return 0}}
 function mergeTypologies(items){const m=new Map();for(const x of items){if(!validTypeName(x.type_name))continue;const k=typeKey(x);if(!m.has(k))m.set(k,{...x,observed_count:1});else m.set(k,mergeTwo(m.get(k),x))}return[...m.values()]}
 
@@ -438,9 +383,8 @@ async function scanOneSource(runId,source){
     const rootHtml=await fetchHtml(source.url);visited.add(source.url);pagesDone=1;await bumpRun(runId,1);
     const root$=cheerio.load(rootHtml),rootText=norm(root$('body').text()).slice(0,180000),phaseMap=parsePhaseMap(rootText),phase=phaseFromUrl(source.url),phaseStatus=phase?(phaseMap[phase]||null):null,categoryPrices=parseCategoryPrices(rootText),ctx={pageUrl:source.url,phase,phaseStatus,phaseMap,categoryPrices};
     const visuals=extractVisuals(rootHtml,source.url),rootLoc=findAddressData(root$,rootText,source),rootLinks=discoverLinksFromHtml(rootHtml,source.url,source);for(const u of rootLinks.locations)locationUrls.add(u);for(const [u,h] of rootLinks.detail)detailHints.set(u,h);
-    collected.push(...listingRecordsFromHtml(rootHtml,source.url,source,ctx));
     // Discovery pages sunt doar indexuri/listări. Le folosim să găsim long-tail-uri, nu le salvăm ca tipologii.
-    for(const du of (rootLinks.discovery||[]).slice(0,12)){checkBudget();if(visited.has(du))continue;try{const dh=await fetchHtml(du);visited.add(du);pagesDone++;await bumpRun(runId,1);collected.push(...listingRecordsFromHtml(dh,du,source,ctx));const dl=discoverLinksFromHtml(dh,du,source);for(const u of dl.locations)locationUrls.add(u);for(const [u,h] of dl.detail)if(!detailHints.has(u))detailHints.set(u,h)}catch{pagesFailed++}}
+    for(const du of (rootLinks.discovery||[]).slice(0,12)){checkBudget();if(visited.has(du))continue;try{const dh=await fetchHtml(du);visited.add(du);pagesDone++;await bumpRun(runId,1);const dl=discoverLinksFromHtml(dh,du,source);for(const u of dl.locations)locationUrls.add(u);for(const [u,h] of dl.detail)if(!detailHints.has(u))detailHints.set(u,h)}catch{pagesFailed++}}
     const sitemapUrls=await discoverSitemaps(source);for(const u of sitemapUrls){if(isLocationUrl(u))locationUrls.add(u);if(isCandidateDetailUrl(u,source.url)&&!detailHints.has(u))detailHints.set(u,null)}
     const origin=originOf(source.url);for(const p of ['/localizare/','/locatie/','/location/'])locationUrls.add(origin+p);
     let bestLoc=rootLoc;

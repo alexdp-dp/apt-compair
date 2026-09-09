@@ -1,11 +1,11 @@
-# AptCompare Build 12
+# AptCompare Build 13 — recovery/stable
 
-Hotfix / parser recovery build.
+Acest build revine la parserul stabil din Build 10 și elimină regresiile introduse în Build 11/12.
 
-- Restores data extraction after Build 11 became too conservative.
-- Listing/category cards are first-class extraction sources: title, rooms, area, price and VAT are saved before detail-page enrichment.
-- Detail pages enrich missing fields but cannot wipe card values with NA.
-- Generic price extraction is context-aware and rejects parking/garage/storage/design/commission/advance/rent/fee amounts.
-- If an individual price is unclear, category `de la` remains the fallback.
-- Generic Sold Out inference remains disabled.
-- Keeps sitemap discovery, long-tail full titles, location-page lookup, PostgreSQL admin reset, scan concurrency and stable image fallback.
+- parserul de tipologii/date este cel din Build 10
+- NU mai face extragerea experimentală din listing care concatena suprafața/statusul în titlu
+- disponibilitatea generică este dezactivată (nu mai deduce Sold Out)
+- păstrează PostgreSQL, Database Admin, sitemap discovery, localizare, scanare paralelă, titluri complete, NARI/vile/case și fallback imagini fără flicker
+- BUILD=13
+
+Scopul acestui build este recuperarea unei baze funcționale înainte de a reface separat, testat, parserul generic de preț.
