@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 7;
+const BUILD = 8;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -173,33 +173,46 @@ function roomDescriptor(text){
   return c?norm(c[0]):null;
 }
 function commercialHintFromAnchor($,a,source){
-  // 1) Dacă ancora/cardul conține deja titlul complet, îl păstrăm literal.
+  // Dacă ancora conține deja numele comercial complet, îl păstrăm literal.
   const direct=[];
   a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{const t=exactTypeName($(e).text(),source.name,false);if(t)direct.push(t)});
   const self=exactTypeName(a.text(),source.name,false);if(self)direct.push(self);
   for(const t of direct)if(validTypeName(t))return t;
 
-  // 2) Unele template-uri (ex. PRIMA) țin „2 camere” și „Torino” în noduri separate.
-  // Construim titlul comercial din ACEEAȘI carte, fără să luăm date de la vecini.
-  let card=a.closest('article,li,[class*="card"],[class*="apart"],[class*="property"],[class*="unit"],[class*="item"],[class*="box"]');
+  // IMPORTANT: multe template-uri țin categoria și numele în elemente/siblings diferite.
+  // Urcăm controlat prin strămoși și alegem CEL MAI MIC container care conține
+  // descriptorul de locuință + textul linkului. Astfel „2 camere + birou” + „Bonn”
+  // devine exact „2 camere + birou Bonn”, fără să contaminăm cu cardurile vecine.
+  let card=null, node=a;
+  for(let i=0;i<7 && node && node.length;i++){
+    const tx=norm(node.text());
+    if(tx.length>=3 && tx.length<=2600 && roomDescriptor(tx)){card=node;break}
+    node=node.parent();
+  }
+  if(!card||!card.length)card=a.closest('article,li,[class*="card"],[class*="apart"],[class*="property"],[class*="unit"],[class*="item"],[class*="box"]');
   if(!card.length)card=a.parent();
-  const cardText=norm(card.text()).slice(0,1800),desc=roomDescriptor(cardText);
+  const cardText=norm(card.text()).slice(0,2600),desc=roomDescriptor(cardText);
   if(!desc)return null;
+
   const bad=/^(?:home|despre noi|sold out|disponibil|află mai multe|afla mai multe|detalii|vezi|descoperă|descopera|solicită|solicita|economisești|economisesti|preț|pret|în complexul|in complexul)$/i;
+  const anchorText=norm(a.text());
   let name=null;
-  card.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{
-    if(name)return;const t=norm($(e).text());if(!t||t.length>100||bad.test(t))return;
-    if(/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(t)||/^(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])$/i.test(t))return;
-    if(/^(?:în|in)\s+complexul/i.test(t)||/^(?:preț|pret)\s+de\s+la/i.test(t)||/^(?:disponibil|sold)/i.test(t))return;
-    if(normalizeProjectish(t)===normalizeProjectish(source.name))return;
-    name=t;
-  });
+
+  // Numele din ancora long-tail are prioritate dacă nu este chiar descriptorul.
+  if(anchorText && anchorText.length<140 && !bad.test(anchorText) && slug(anchorText)!==slug(desc) && !/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(anchorText)) name=anchorText;
+
   if(!name){
-    // fallback pentru linkuri al căror text este doar numele comercial
-    const t=norm(a.text());if(t&&t.length<100&&!bad.test(t)&&!/^([1-6])\s*(?:camere|camera)$/i.test(t))name=t;
+    card.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{
+      if(name)return;const t=norm($(e).text());if(!t||t.length>140||bad.test(t))return;
+      if(slug(t)===slug(desc)||/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(t)||/^(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])$/i.test(t))return;
+      if(/^(?:în|in)\s+complexul/i.test(t)||/^(?:preț|pret)\s+de\s+la/i.test(t)||/^(?:disponibil|sold)/i.test(t))return;
+      if(normalizeProjectish(t)===normalizeProjectish(source.name))return;
+      name=t;
+    });
   }
   if(!name)return null;
-  const built=norm(`${desc} ${name}`);
+  // Nu dublăm descriptorul dacă numele îl conține deja.
+  const built=new RegExp('(?:^|\\b)'+desc.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?:\\b|$)','i').test(name) ? norm(name) : norm(`${desc} ${name}`);
   return validTypeName(built)?built:null;
 }
 function normalizeProjectish(s){return slug(s).replace(/(?:residence|residential|development|group|oradea|city)$/g,'')}
@@ -214,12 +227,44 @@ function extractTitle($,source,hint){
 }
 function extractProjectName($,source){
   let project=null;
-  const body=norm($('body').text()).slice(0,30000);
-  // Template-urile rezidențiale expun frecvent exact „În complexul: NUME PROIECT”.
+  const hostname=hostOf(source.url);
+
+  // Alera este un portofoliu cu MAI MULTE proiecte sub aceeași sursă.
+  // Nu căutăm niciodată în header/nav, fiindcă primul link din meniu este
+  // Central Address Residence și contamina toate proprietățile.
+  if(/aleraproperties\.ro$/i.test(hostname)){
+    let main=$('main').first(); if(!main.length) main=$('body');
+    const clean=main.clone(); clean.find('header,nav,footer,script,style,noscript').remove();
+    const h1=clean.find('h1').first();
+    if(h1.length){
+      // pe paginile Alera, proiectul este linkul /proiect/ imediat înaintea H1
+      const before=clean.find('a[href*="/proiect/"]').filter((_,e)=>{
+        try{return clean.find('*').index(e) < clean.find('*').index(h1[0])}catch{return true}
+      });
+      const cand=norm(before.last().text());
+      if(cand && cand.length>=3 && cand.length<120 && !/^proiect/i.test(cand)) project=cand;
+    }
+    if(!project){
+      const firstProject=clean.find('a[href*="/proiect/"]').first();
+      const cand=norm(firstProject.text());
+      if(cand && cand.length>=3 && cand.length<120 && !/^proiect/i.test(cand)) project=cand;
+    }
+    if(!project){
+      const txt=norm(clean.text()).slice(0,12000);
+      const m=txt.match(/(?:situat(?:ă|a)?\s+(?:în|in)|în|in)\s+([A-ZĂÂÎȘȚ][A-Za-zĂÂÎȘȚăâîșț0-9 .&'’\-]{2,70}?(?:Residence|Rezidențial|Rezidential))\b/i);
+      if(m)project=norm(m[1]);
+    }
+    return project||null; // niciodată source.name pentru Alera dacă nu știm proiectul
+  }
+
+  // Restul site-urilor: caută proiectul în conținut, nu în navigația globală.
+  let main=$('main').first(); if(!main.length)main=$('body');
+  const clean=main.clone();clean.find('header,nav,footer,script,style,noscript').remove();
+  const body=norm(clean.text()).slice(0,30000);
   let m=body.match(/(?:În|In)\s+complexul\s*:\s*([A-ZĂÂÎȘȚ0-9][A-Za-zĂÂÎȘȚăâîșț0-9 .&'’\-]{2,80}?)(?=\s+(?:Preț|Pret|Suprafa|Sold|Disponibil|Solicit|Image|$))/i);
   if(m)project=norm(m[1]);
   if(!project){
-    $('a[href*="/proiect/"],a[href*="/project/"]').each((_,e)=>{const t=norm($(e).text());if(!project&&t.length>=3&&t.length<100&&!/^proiect/i.test(t))project=t});
+    clean.find('a[href*="/proiect/"],a[href*="/project/"]').each((_,e)=>{const t=norm(clean.find(e).text());if(!project&&t.length>=3&&t.length<100&&!/^proiect/i.test(t))project=t});
   }
   if(!project){m=body.match(/(?:Proiect|Ansamblu)\s*[:\-]\s*([A-ZĂÂÎȘȚ][^|•]{3,90}?)(?=\s{2,}|Preț|Pret|Suprafa|$)/i);if(m)project=norm(m[1])}
   return project||source.name;
@@ -229,10 +274,13 @@ function detailRecord(html,url,source,ctx={},hint=null){
   let scope=$('h1').first().closest('[class*="apart"],[class*="property"],[class*="detail"],article,main');if(!scope.length)scope=$('main');if(!scope.length)scope=$('body');scope=scope.clone();scope.find('script,style,noscript,svg,nav,footer').remove();const text=norm(scope.text()).slice(0,50000);
   const rooms=roomCount(title),areas=parseAreas(text),price=parsePrice(text),cat=categoryPriceFor(title,rooms,ctx.categoryPrices||{}),loc=findAddressData($,norm($('body').text()).slice(0,100000),source),detailPhase=phaseFromUrl(url)||ctx.phase||null,detailPhaseStatus=(detailPhase&&ctx.phaseMap?ctx.phaseMap[detailPhase]:null)||ctx.phaseStatus||null;
   const project=extractProjectName($,source);
-  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:parseAvailability(text),phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
+  // Pentru surse multi-proiect (Alera), un record fără proiect explicit este nesigur și este respins.
+  if(/aleraproperties\.ro$/i.test(hostOf(source.url))&&!project)return null;
+  const pv=extractVisuals(html,url);
+  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:parseAvailability(text),phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
 }
 function typeKey(x){return slug(x.project||'')+'::'+slug(x.type_name)}
-function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
+function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone','project_image_url','project_logo_url'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
 function urlScore(u){try{const p=new URL(u).pathname;return p.split('/').filter(Boolean).length*100+p.length}catch{return 0}}
 function mergeTypologies(items){const m=new Map();for(const x of items){if(!validTypeName(x.type_name))continue;const k=typeKey(x);if(!m.has(k))m.set(k,{...x,observed_count:1});else m.set(k,mergeTwo(m.get(k),x))}return[...m.values()]}
 
@@ -241,6 +289,7 @@ async function migrate(){if(!pool)return;
   await db(`CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY,name TEXT NOT NULL,url TEXT NOT NULL,enabled BOOLEAN NOT NULL DEFAULT TRUE,city TEXT,zone TEXT,address TEXT,image_url TEXT,logo_url TEXT,last_scanned_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   for(const c of ['address TEXT','image_url TEXT','logo_url TEXT','last_scanned_at TIMESTAMPTZ'])await db(`ALTER TABLE sources ADD COLUMN IF NOT EXISTS ${c}`);
   await db(`CREATE TABLE IF NOT EXISTS typologies (id BIGSERIAL PRIMARY KEY,source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,type_key TEXT NOT NULL,developer TEXT,project TEXT,type_name TEXT NOT NULL,type_code TEXT,rooms INTEGER,price_min NUMERIC,price_max NUMERIC,vat TEXT,category_price_from NUMERIC,category_vat TEXT,useful_area NUMERIC,total_area NUMERIC,built_area NUMERIC,terrace_area NUMERIC,availability TEXT,phase TEXT,phase_status TEXT,status TEXT,completion TEXT,address TEXT,city TEXT,zone TEXT,facilities JSONB NOT NULL DEFAULT '[]'::jsonb,source_url TEXT,observed_count INTEGER NOT NULL DEFAULT 1,confidence INTEGER NOT NULL DEFAULT 0,first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),is_current BOOLEAN NOT NULL DEFAULT TRUE,UNIQUE(source_id,type_key))`);
+  for(const c of ['project_image_url TEXT','project_logo_url TEXT'])await db(`ALTER TABLE typologies ADD COLUMN IF NOT EXISTS ${c}`);
   for(const c of ['type_code TEXT','category_price_from NUMERIC','category_vat TEXT','availability TEXT','phase TEXT','phase_status TEXT','city TEXT','zone TEXT'])await db(`ALTER TABLE typologies ADD COLUMN IF NOT EXISTS ${c}`);
   await db(`CREATE TABLE IF NOT EXISTS price_history (id BIGSERIAL PRIMARY KEY,typology_id BIGINT NOT NULL REFERENCES typologies(id) ON DELETE CASCADE,price_min NUMERIC,price_max NUMERIC,observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await db(`CREATE TABLE IF NOT EXISTS scan_runs (id TEXT PRIMARY KEY,kind TEXT NOT NULL,status TEXT NOT NULL,total_sources INTEGER NOT NULL DEFAULT 0,completed_sources INTEGER NOT NULL DEFAULT 0,pages_scanned INTEGER NOT NULL DEFAULT 0,types_found INTEGER NOT NULL DEFAULT 0,started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),finished_at TIMESTAMPTZ,error TEXT)`);
@@ -258,10 +307,10 @@ async function replaceTypologiesAtomic(source,found){
   if(!found.length)throw new Error('Scanarea nu a găsit nicio tipologie long-tail validă; datele existente au fost păstrate.');
   const client=await pool.connect();
   try{await client.query('BEGIN');const oldRows=(await client.query(`SELECT id,type_key,price_min,price_max FROM typologies WHERE source_id=$1`,[source.id])).rows;const oldMap=new Map(oldRows.map(r=>[r.type_key,r]));const seen=[];
-    for(const x of found){const k=typeKey(x);seen.push(k);const r=await client.query(`INSERT INTO typologies(source_id,type_key,developer,project,type_name,type_code,rooms,price_min,price_max,vat,category_price_from,category_vat,useful_area,total_area,built_area,terrace_area,availability,phase,phase_status,address,city,zone,facilities,source_url,observed_count,confidence,last_seen_at,is_current)
+    for(const x of found){const k=typeKey(x);seen.push(k);const r=await client.query(`INSERT INTO typologies(source_id,type_key,developer,project,type_name,type_code,rooms,price_min,price_max,vat,category_price_from,category_vat,useful_area,total_area,built_area,terrace_area,availability,phase,phase_status,address,city,zone,facilities,source_url,project_image_url,project_logo_url,observed_count,confidence,last_seen_at,is_current)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb,$24,$25,$26,NOW(),TRUE)
-      ON CONFLICT(source_id,type_key) DO UPDATE SET developer=EXCLUDED.developer,project=EXCLUDED.project,type_name=EXCLUDED.type_name,type_code=EXCLUDED.type_code,rooms=EXCLUDED.rooms,price_min=EXCLUDED.price_min,price_max=EXCLUDED.price_max,vat=EXCLUDED.vat,category_price_from=EXCLUDED.category_price_from,category_vat=EXCLUDED.category_vat,useful_area=EXCLUDED.useful_area,total_area=EXCLUDED.total_area,built_area=EXCLUDED.built_area,terrace_area=EXCLUDED.terrace_area,availability=EXCLUDED.availability,phase=EXCLUDED.phase,phase_status=EXCLUDED.phase_status,address=COALESCE(EXCLUDED.address,typologies.address),city=COALESCE(EXCLUDED.city,typologies.city),zone=COALESCE(EXCLUDED.zone,typologies.zone),source_url=EXCLUDED.source_url,observed_count=EXCLUDED.observed_count,confidence=EXCLUDED.confidence,last_seen_at=NOW(),is_current=TRUE RETURNING id,price_min,price_max`,
-      [source.id,k,x.developer,x.project,x.type_name,x.type_code,x.rooms,x.price_min,x.price_max,x.vat,x.category_price_from,x.category_vat,x.useful_area,x.total_area,x.built_area,x.terrace_area,x.availability,x.phase,x.phase_status,x.address,x.city,x.zone,JSON.stringify(x.facilities||[]),x.source_url,x.observed_count||1,x.confidence||0]);
+      ON CONFLICT(source_id,type_key) DO UPDATE SET developer=EXCLUDED.developer,project=EXCLUDED.project,type_name=EXCLUDED.type_name,type_code=EXCLUDED.type_code,rooms=EXCLUDED.rooms,price_min=EXCLUDED.price_min,price_max=EXCLUDED.price_max,vat=EXCLUDED.vat,category_price_from=EXCLUDED.category_price_from,category_vat=EXCLUDED.category_vat,useful_area=EXCLUDED.useful_area,total_area=EXCLUDED.total_area,built_area=EXCLUDED.built_area,terrace_area=EXCLUDED.terrace_area,availability=EXCLUDED.availability,phase=EXCLUDED.phase,phase_status=EXCLUDED.phase_status,address=COALESCE(EXCLUDED.address,typologies.address),city=COALESCE(EXCLUDED.city,typologies.city),zone=COALESCE(EXCLUDED.zone,typologies.zone),source_url=EXCLUDED.source_url,project_image_url=COALESCE(EXCLUDED.project_image_url,typologies.project_image_url),project_logo_url=COALESCE(EXCLUDED.project_logo_url,typologies.project_logo_url),observed_count=EXCLUDED.observed_count,confidence=EXCLUDED.confidence,last_seen_at=NOW(),is_current=TRUE RETURNING id,price_min,price_max`,
+      [source.id,k,x.developer,x.project,x.type_name,x.type_code,x.rooms,x.price_min,x.price_max,x.vat,x.category_price_from,x.category_vat,x.useful_area,x.total_area,x.built_area,x.terrace_area,x.availability,x.phase,x.phase_status,x.address,x.city,x.zone,JSON.stringify(x.facilities||[]),x.source_url,x.project_image_url,x.project_logo_url,x.observed_count||1,x.confidence||0]);
       const cur=r.rows[0],old=oldMap.get(k),changed=!old||String(old.price_min??'')!==String(cur.price_min??'')||String(old.price_max??'')!==String(cur.price_max??'');if(changed&&(cur.price_min!=null||cur.price_max!=null))await client.query(`INSERT INTO price_history(typology_id,price_min,price_max) VALUES($1,$2,$3)`,[cur.id,cur.price_min,cur.price_max]);
     }
     await client.query(`UPDATE typologies SET is_current=FALSE WHERE source_id=$1 AND NOT(type_key = ANY($2::text[]))`,[source.id,seen]);await client.query('COMMIT');
