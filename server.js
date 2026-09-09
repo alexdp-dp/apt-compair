@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
 
-const BUILD = 9;
+const BUILD = 11;
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
@@ -43,13 +43,15 @@ function dwellingCategory(typeName) {
   if (/\bduplex\b/.test(t)) return 'duplex';
   if (/\bpenthouse\b/.test(t)) return 'penthouse';
   if (/\bvil[ăa]\b/.test(t)) return 'vila';
+  if (/\bcas[ăa]\b|\bcase\b/.test(t)) return 'casa';
+  if (/\btownhouse\b/.test(t)) return 'townhouse';
   return 'apartament';
 }
 function isGenericTypeName(t) {
   const s = slug(t);
   if (!s) return true;
   const generic = new Set([
-    'apartament','apartamente','apartment','apartments','garsoniera','garsoniere','studio','studiouri','duplex','duplexuri','penthouse','penthouse-uri','vila','vile',
+    'apartament','apartamente','apartment','apartments','garsoniera','garsoniere','studio','studiouri','duplex','duplexuri','penthouse','penthouse-uri','vila','vile','casa','case','townhouse','townhouses',
     'apartament-1-camera','apartamente-1-camera','apartament-2-camere','apartamente-2-camere','apartament-3-camere','apartamente-3-camere','apartament-4-camere','apartamente-4-camere',
     '1-camera','2-camere','3-camere','4-camere','5-camere','tipologii','locuinte','unitati'
   ]);
@@ -68,12 +70,12 @@ function validTypeName(t) {
   if (!t || t.length < 6 || t.length > 180 || isGenericTypeName(t)) return false;
   // Acceptăm titlul comercial complet, inclusiv cazurile în care site-ul îl scrie
   // ca „2 camere Torino”, fără cuvântul „Apartament”.
-  const hasDwelling = /\b(?:apartament|studio|garsonier|duplex|penthouse|vil[ăa]|[1-6]\s*(?:camere|camera))\b/i.test(t);
+  const hasDwelling = /\b(?:apartament|studio|garsonier|duplex|penthouse|vil[ăa]|cas[ăa]|case|townhouse|[1-6]\s*(?:camere|camera))\b/i.test(t);
   if (!hasDwelling) return false;
   const words=t.split(/\s+/).filter(Boolean);
   const hasCode=/\b(?:tip\s+)?[A-ZĂÂÎȘȚ]?[0-9]{1,3}(?:[-.][A-Z0-9]+)*(?:\s+L\d+)?\b/i.test(t);
   const roomPlusName=/\b[1-6]\s*(?:camere|camera)\b/i.test(t) && words.length>=3;
-  const namedCategory=/\b(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])\b/i.test(t) && words.length>=2;
+  const namedCategory=/\b(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa]|cas[ăa]|case|townhouse)\b/i.test(t) && words.length>=2;
   return hasCode || roomPlusName || namedCategory || words.length>=3;
 }
 function parseTypeCode(name) {
@@ -81,11 +83,49 @@ function parseTypeCode(name) {
   const matches=[...t.matchAll(/\b([A-Z]\d+(?:[-.][A-Z0-9]+)*(?:\s+L\d+)?)\b/g)];
   return matches.length ? norm(matches[matches.length-1][1]) : null;
 }
-function parsePrice(text) {
-  const t=norm(text);
-  const arr=[...t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)]
-    .map(m=>num(m[1])).filter(n=>n>=15000&&n<=5000000);
-  return arr.length ? Math.min(...arr) : null;
+function priceAmounts(text) {
+  const t=norm(text), out=[];
+  for(const m of t.matchAll(/(?:de\s+la\s*)?([0-9]{2,3}(?:[.\s][0-9]{3})+(?:,[0-9]{1,2})?|[0-9]{4,7}(?:[.,][0-9]{1,2})?)\s*(?:€|eur(?:o)?\b)/ig)) {
+    const value=num(m[1]); if(value!=null && value>=5000 && value<=5000000) out.push({value,index:m.index||0,raw:m[0]});
+  }
+  return out;
+}
+function parsePriceContextual($, scope, title='') {
+  // Generic price extraction: score semantic candidates close to the current property.
+  // Never choose the smallest/first euro amount from the whole page.
+  const bad=/\b(?:parcare|parking|loc(?:ul)?\s+de\s+parcare|garaj|garage|box[ăa]|storage|design|mobilare|mobilat|mobilier|furniture|comision|commission|avans|down\s*payment|rat[ăaei]|rate|lunar|monthly|chirie|rent|tax[ăa]|fee|notar|notarial)\b/i;
+  const good=/\b(?:pre[țt]|price|valoare|cost(?:ul)?\s+(?:apartamentului|propriet[aă][țt]ii)|v[aâ]nzare|sale)\b/i;
+  const nodes=[];
+  scope.find('*').each((_,el)=>{
+    const node=$(el); if(node.children().length>6)return;
+    const txt=norm(node.text()); if(!txt || txt.length>700 || !/(?:€|\beur(?:o)?\b)/i.test(txt))return;
+    nodes.push({el,node,txt});
+  });
+  const seen=new Set(), candidates=[];
+  for(const {node,txt} of nodes){
+    const amounts=priceAmounts(txt); if(!amounts.length)continue;
+    const cls=((node.attr('class')||'')+' '+(node.attr('id')||'')).toLowerCase();
+    for(const a of amounts){
+      const key=a.value+'|'+txt; if(seen.has(key))continue; seen.add(key);
+      let score=0;
+      if(/price|pret|preț|cost|amount|value/.test(cls))score+=10;
+      if(good.test(txt))score+=8;
+      if(/\+\s*tva|tva\s*(?:inclus|included)/i.test(txt))score+=2;
+      if(/\bde\s+la\b/i.test(txt))score-=1; // category/start price, not necessarily individual
+      if(bad.test(txt))score-=30;
+      if(a.value<30000)score-=3;
+      const parentTxt=norm(node.parent().text()).slice(0,1200);
+      if(bad.test(parentTxt) && !good.test(txt))score-=12;
+      if(good.test(parentTxt))score+=3;
+      const ancestor=node.closest('[class*="price" i],[class*="pret" i],[class*="property" i],[class*="apart" i],[class*="detail" i],article');
+      if(ancestor.length){const at=norm(ancestor.text()).slice(0,1800);if(good.test(at))score+=2;if(bad.test(at)&&!good.test(txt))score-=5;}
+      candidates.push({value:a.value,score,text:txt});
+    }
+  }
+  candidates.sort((a,b)=>b.score-a.score || b.value-a.value);
+  const best=candidates[0];
+  // Conservative threshold: unclear prices become NA; category price is handled separately.
+  return best && best.score>=8 ? best.value : null;
 }
 function parseVat(text) {
   const t=norm(text);
@@ -104,9 +144,25 @@ function parseAreas(text) {
 }
 function parseAvailability(text) {
   const t=norm(text);
-  if (/\bsold\s*out\b|\bvândut(?:\s+integral)?\b|\bvendut(?:\s+integral)?\b/i.test(t)) return 'sold_out';
+  // O tipologie poate conține simultan unități vândute și disponibile.
+  // Dacă există cel puțin o unitate disponibilă, tipologia este disponibilă.
   if (/\bdisponibil(?:e|ă|a)?\b/i.test(t)) return 'available';
+  if (/\bsold\s*out\b|\bvândut(?:\s+integral)?\b|\bvendut(?:\s+integral)?\b/i.test(t)) return 'sold_out';
   return null;
+}
+function parseAvailabilityDom($, scopeText='') {
+  let available=0,sold=0,rows=0;
+  const selectors='tr,[class*=availability] [class*=row],[class*=dispon] [class*=row],[class*=apartment] [class*=row],[class*=unit] [class*=row]';
+  $(selectors).each((_,el)=>{
+    const t=norm($(el).text());
+    if(!t || t.length>800)return;
+    const hasAvail=/\bdisponibil(?:e|ă|a)?\b/i.test(t);
+    const hasSold=/\bsold\s*out\b|\bvândut(?:\s+integral)?\b|\bvendut(?:\s+integral)?\b/i.test(t);
+    if(hasAvail||hasSold){rows++; if(hasAvail)available++; else if(hasSold)sold++;}
+  });
+  if(available>0)return 'available';
+  if(rows>0 && sold===rows)return 'sold_out';
+  return parseAvailability(scopeText);
 }
 function normalizePhaseStatus(s) {
   s=norm(s); if(/finalizat|livrat/i.test(s))return 'Finalizat'; if(/recepționat|receptionat/i.test(s))return 'Recepționată'; if(/în\s+construcție|in\s+constructie/i.test(s))return 'În construcție'; if(/în\s+curând|in\s+curand/i.test(s))return 'În curând'; return s||null;
@@ -117,7 +173,7 @@ function parseCategoryPrices(text){const t=norm(text),out={};const add=(k,r)=>{c
 function categoryPriceFor(name,rooms,map){const cat=dwellingCategory(name);if(cat==='studio'&&map.studio)return map.studio;if(cat==='garsoniera'&&map.garsoniera)return map.garsoniera;return map[String(rooms)]||null}
 
 function parseJsonLd($){const out=[];$('script[type="application/ld+json"]').each((_,el)=>{try{const v=JSON.parse($(el).html());out.push(...(Array.isArray(v)?v:[v]))}catch{}});return out.flatMap(v=>v&&Array.isArray(v['@graph'])?v['@graph']:[v]).filter(Boolean)}
-function canonicalCity(s){const m=norm(s).toLowerCase();const map=[['bucure','București'],['oradea','Oradea'],['cluj','Cluj-Napoca'],['brașov','Brașov'],['brasov','Brașov'],['timiș','Timișoara'],['timis','Timișoara'],['iași','Iași'],['iasi','Iași'],['constan','Constanța'],['ploi','Ploiești'],['voluntari','Voluntari'],['dobroe','Dobroești']];const hit=map.find(([k])=>m.includes(k));return hit?hit[1]:null}
+function canonicalCity(s){const m=norm(s).toLowerCase();const map=[['bucure','București'],['oradea','Oradea'],['cluj','Cluj-Napoca'],['brașov','Brașov'],['brasov','Brașov'],['timiș','Timișoara'],['timis','Timișoara'],['iași','Iași'],['iasi','Iași'],['constan','Constanța'],['ploi','Ploiești'],['voluntari','Voluntari'],['tunari','Tunari'],['dobroe','Dobroești']];const hit=map.find(([k])=>m.includes(k));return hit?hit[1]:null}
 function cityFromCoords(lat,lng){if(lat==null||lng==null)return null;if(lat>44.30&&lat<44.60&&lng>25.85&&lng<26.30)return 'București';if(lat>47.00&&lat<47.15&&lng>21.80&&lng<22.05)return 'Oradea';return null}
 function decodeMapQuery(u){try{const x=new URL(u);for(const k of ['q','query','destination']){const v=x.searchParams.get(k);if(v&&v.length>3)return decodeURIComponent(v.replace(/\+/g,' '))}}catch{}return null}
 function findAddressData($, text, source) {
@@ -152,8 +208,8 @@ async function fetchText(url, accept='text/html,application/xhtml+xml,applicatio
 }
 async function fetchHtml(url){const r=await fetchText(url);if(!/html/i.test(r.contentType)&&!/<(?:html|body|head)[\s>]/i.test(r.text.slice(0,1000)))throw new Error('Nu este HTML');return r.text}
 
-function genericLeaf(pathname){const p=pathname.toLowerCase().replace(/\/+$/,'');const leaf=p.split('/').filter(Boolean).pop()||'';return /^(?:apartamente?|apartments?|garsoniere?|studiouri?|studio|tipologii|locuinte|unitati|proprietati|properties|faza-?\d+|phase-?\d+|proiecte?|projects?|home|acasa|contact|localizare|locatie|location)$/.test(leaf)||/^(?:apartamente?|apartments?)-(?:de-)?(?:vanzare-)?[1-6]-(?:camere|camera)$/.test(leaf)}
-function isCandidateDetailUrl(url,root){try{const u=new URL(url);if(!sameHost(url,root))return false;if(genericLeaf(u.pathname)||u.pathname==='/'||/\.(?:jpg|jpeg|png|webp|svg|pdf|xml)$/i.test(u.pathname))return false;const p=u.pathname.toLowerCase();return /(?:apartament|apartment|studio|garson|duplex|penthouse|vila|villa|unit|property|proprietate|tip[-_/])/i.test(p)}catch{return false}}
+function genericLeaf(pathname){const p=pathname.toLowerCase().replace(/\/+$/,'');const leaf=p.split('/').filter(Boolean).pop()||'';return /^(?:apartamente?|apartments?|garsoniere?|studiouri?|studio|vile|case|houses?|townhouses?|tipuri-de-case|tipologii|locuinte|unitati|proprietati|properties|faza-?\d+|phase-?\d+|proiecte?|projects?|home|acasa|contact|localizare|locatie|location)$/.test(leaf)||/^(?:apartamente?|apartments?)-(?:de-)?(?:vanzare-)?[1-6]-(?:camere|camera)$/.test(leaf)}
+function isCandidateDetailUrl(url,root){try{const u=new URL(url);if(!sameHost(url,root))return false;if(genericLeaf(u.pathname)||u.pathname==='/'||/\.(?:jpg|jpeg|png|webp|svg|pdf|xml)$/i.test(u.pathname))return false;const p=u.pathname.toLowerCase();return /(?:apartament|apartment|studio|garson|duplex|penthouse|vila|villa|cas[ăa-]|case[-_/]|house|townhouse|unit|property|proprietate|tip[-_/])/i.test(p)}catch{return false}}
 function isLocationUrl(url){try{return /\/(?:localizare|locatie|location|contact)(?:\/|$)/i.test(new URL(url).pathname)}catch{return false}}
 
 async function discoverSitemaps(source){
@@ -169,7 +225,7 @@ function roomDescriptor(text){
   const t=norm(text);
   const m=t.match(/\b([1-6])\s*(camere|camera)(?:\s*\+\s*birou)?\b/i);
   if(m)return norm(m[0]);
-  const c=t.match(/\b(garsonier[ăa]?|studio|duplex|penthouse|vil[ăa])\b/i);
+  const c=t.match(/\b(garsonier[ăa]?|studio|duplex|penthouse|vil[ăa]|cas[ăa]|case|townhouse)\b/i);
   return c?norm(c[0]):null;
 }
 function commercialHintFromAnchor($,a,source){
@@ -204,7 +260,7 @@ function commercialHintFromAnchor($,a,source){
   if(!name){
     card.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').each((_,e)=>{
       if(name)return;const t=norm($(e).text());if(!t||t.length>140||bad.test(t))return;
-      if(slug(t)===slug(desc)||/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(t)||/^(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa])$/i.test(t))return;
+      if(slug(t)===slug(desc)||/^([1-6])\s*(?:camere|camera)(?:\s*\+\s*birou)?$/i.test(t)||/^(?:studio|garsonier[ăa]?|duplex|penthouse|vil[ăa]|cas[ăa]|case|townhouse)$/i.test(t))return;
       if(/^(?:în|in)\s+complexul/i.test(t)||/^(?:preț|pret)\s+de\s+la/i.test(t)||/^(?:disponibil|sold)/i.test(t))return;
       if(normalizeProjectish(t)===normalizeProjectish(source.name))return;
       name=t;
@@ -216,7 +272,32 @@ function commercialHintFromAnchor($,a,source){
   return validTypeName(built)?built:null;
 }
 function normalizeProjectish(s){return slug(s).replace(/(?:residence|residential|development|group|oradea|city)$/g,'')}
-function discoverLinksFromHtml(html,base,source){const $=cheerio.load(html),detail=new Map(),locations=new Set();$('a[href]').each((_,el)=>{const a=$(el),href=resolveUrl(a.attr('href'),base);if(!href||!sameHost(href,source.url))return;const label=norm(a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').first().text())||norm(a.text());if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);if(isCandidateDetailUrl(href,source.url)){const hint=commercialHintFromAnchor($,a,source);if(hint)detail.set(href,hint);else if(!detail.has(href))detail.set(href,null)}});return{detail,locations:[...locations]}}
+function isDiscoveryUrl(url,label=''){
+  try{
+    const p=decodeURIComponent(new URL(url).pathname).toLowerCase(),t=norm(label).toLowerCase();
+    if(genericLeaf(p))return /apart|vile|case|house|tipolog|locuinte|unitati|propriet|plan/i.test(p+' '+t);
+    return /(?:apartamente|apartments|vile|case|houses|tipuri[- ]de[- ]case|tipologii|locuinte|unitati|proprietati|properties|plan[- ]interactiv)/i.test(p+' '+t);
+  }catch{return false}
+}
+function discoverLinksFromHtml(html,base,source){
+  const $=cheerio.load(html),detail=new Map(),locations=new Set(),discovery=new Set();
+  const consider=(href,label='',anchor=null)=>{
+    href=resolveUrl(href,base);if(!href||!sameHost(href,source.url))return;
+    if(isLocationUrl(href)||/\b(?:localizare|locație|locatie|location)\b/i.test(label))locations.add(href);
+    if(isCandidateDetailUrl(href,source.url)){
+      const hint=anchor?commercialHintFromAnchor($,anchor,source):null;
+      if(hint)detail.set(href,hint);else if(!detail.has(href))detail.set(href,null);
+    } else if(isDiscoveryUrl(href,label)) discovery.add(href);
+  };
+  $('a[href]').each((_,el)=>{const a=$(el),label=norm(a.find('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"]').first().text())||norm(a.text());consider(a.attr('href'),label,a)});
+  // Unele planuri interactive (ex. NARI) țin URL-urile locuințelor în data-* / JS,
+  // nu în ancore HTML. Extragem și URL-urile long-tail din markup/scripturi.
+  const raw=String(html).replace(/\\\//g,'/').replace(/&amp;/g,'&');
+  for(const m of raw.matchAll(/(?:https?:\/\/[^"'<>\\s]+|\/(?:[^"'<>\\s]*?)(?:apartament|apartment|vila|villa|casa|case|house|townhouse|proprietate|property)[^"'<>\\s]*)/gi)){
+    const href=m[0].replace(/[),;]+$/,'');consider(href,'',null);
+  }
+  return{detail,locations:[...locations],discovery:[...discovery]};
+}
 function extractTitle($,source,hint){
   const candidates=[];
   $('h1').each((_,e)=>candidates.push({text:norm($(e).text()),meta:false}));
@@ -228,6 +309,8 @@ function extractTitle($,source,hint){
 function extractProjectName($,source){
   let project=null;
   const hostname=hostOf(source.url);
+
+  if(/narivillage\.ro$/i.test(hostname)) return 'NARI Village';
 
   // HILS folosește proiectul în primul segment al URL-ului (ex. /nord/).
   // Paginile long-tail sunt /nord/apartament/..., deci nu lăsăm proiectul ca simplul hostname.
@@ -278,12 +361,12 @@ function extractProjectName($,source){
 function detailRecord(html,url,source,ctx={},hint=null){
   const $=cheerio.load(html),title=extractTitle($,source,hint);if(!title)return null;
   let scope=$('h1').first().closest('[class*="apart"],[class*="property"],[class*="detail"],article,main');if(!scope.length)scope=$('main');if(!scope.length)scope=$('body');scope=scope.clone();scope.find('script,style,noscript,svg,nav,footer').remove();const text=norm(scope.text()).slice(0,50000);
-  const rooms=roomCount(title),areas=parseAreas(text),price=parsePrice(text),cat=categoryPriceFor(title,rooms,ctx.categoryPrices||{}),loc=findAddressData($,norm($('body').text()).slice(0,100000),source),detailPhase=phaseFromUrl(url)||ctx.phase||null,detailPhaseStatus=(detailPhase&&ctx.phaseMap?ctx.phaseMap[detailPhase]:null)||ctx.phaseStatus||null;
+  const rooms=roomCount(title),areas=parseAreas(text),price=parsePriceContextual($,scope,title),cat=categoryPriceFor(title,rooms,ctx.categoryPrices||{}),loc=findAddressData($,norm($('body').text()).slice(0,100000),source),detailPhase=phaseFromUrl(url)||ctx.phase||null,detailPhaseStatus=(detailPhase&&ctx.phaseMap?ctx.phaseMap[detailPhase]:null)||ctx.phaseStatus||null;
   const project=extractProjectName($,source);
   // Pentru surse multi-proiect (Alera), un record fără proiect explicit este nesigur și este respins.
   if(/aleraproperties\.ro$/i.test(hostOf(source.url))&&!project)return null;
   const pv=extractVisuals(html,url);
-  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:parseAvailability(text),phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
+  return {source_id:source.id,developer:source.name,project,type_name:title,type_code:parseTypeCode(title),rooms,price_min:price,price_max:null,vat:price?parseVat(text):null,category_price_from:price?null:(cat?.price||null),category_vat:price?null:(cat?.vat||null),useful_area:areas.useful,total_area:areas.total,built_area:areas.built,terrace_area:areas.terrace,availability:null,phase:detailPhase,phase_status:detailPhaseStatus,address:loc.address,city:loc.city,zone:loc.zone,facilities:[],source_url:url,project_image_url:pv.image,project_logo_url:pv.logo,confidence:[title,rooms,areas.useful||areas.total,price||cat?.price,project].filter(v=>v!=null).length};
 }
 function typeKey(x){return slug(x.project||'')+'::'+slug(x.type_name)}
 function mergeTwo(a,b){const out={...a};for(const f of ['type_code','rooms','price_min','price_max','vat','category_price_from','category_vat','useful_area','total_area','built_area','terrace_area','availability','phase','phase_status','address','city','zone','project_image_url','project_logo_url'])if(out[f]==null&&b[f]!=null)out[f]=b[f];if(b.source_url&&urlScore(b.source_url)>urlScore(out.source_url))out.source_url=b.source_url;out.confidence=Math.max(out.confidence||0,b.confidence||0);out.observed_count=(out.observed_count||1)+(b.observed_count||1);return out}
@@ -338,6 +421,8 @@ async function scanOneSource(runId,source){
     const rootHtml=await fetchHtml(source.url);visited.add(source.url);pagesDone=1;await bumpRun(runId,1);
     const root$=cheerio.load(rootHtml),rootText=norm(root$('body').text()).slice(0,180000),phaseMap=parsePhaseMap(rootText),phase=phaseFromUrl(source.url),phaseStatus=phase?(phaseMap[phase]||null):null,categoryPrices=parseCategoryPrices(rootText),ctx={pageUrl:source.url,phase,phaseStatus,phaseMap,categoryPrices};
     const visuals=extractVisuals(rootHtml,source.url),rootLoc=findAddressData(root$,rootText,source),rootLinks=discoverLinksFromHtml(rootHtml,source.url,source);for(const u of rootLinks.locations)locationUrls.add(u);for(const [u,h] of rootLinks.detail)detailHints.set(u,h);
+    // Discovery pages sunt doar indexuri/listări. Le folosim să găsim long-tail-uri, nu le salvăm ca tipologii.
+    for(const du of (rootLinks.discovery||[]).slice(0,12)){checkBudget();if(visited.has(du))continue;try{const dh=await fetchHtml(du);visited.add(du);pagesDone++;await bumpRun(runId,1);const dl=discoverLinksFromHtml(dh,du,source);for(const u of dl.locations)locationUrls.add(u);for(const [u,h] of dl.detail)if(!detailHints.has(u))detailHints.set(u,h)}catch{pagesFailed++}}
     const sitemapUrls=await discoverSitemaps(source);for(const u of sitemapUrls){if(isLocationUrl(u))locationUrls.add(u);if(isCandidateDetailUrl(u,source.url)&&!detailHints.has(u))detailHints.set(u,null)}
     const origin=originOf(source.url);for(const p of ['/localizare/','/locatie/','/location/'])locationUrls.add(origin+p);
     let bestLoc=rootLoc;
