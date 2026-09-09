@@ -1,4 +1,134 @@
-<!doctype html><html lang="ro"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AptCompare</title><link rel="stylesheet" href="/styles.css"></head><body>
-<header><div><b>AptCompare</b><span>Comparator apartamente</span></div><button id="scanAll">Scanează toate sursele</button></header>
-<main><aside><h3>Filtre</h3><label>Proiect<select id="project"><option value="">Toate</option></select></label><label>Camere<select id="rooms"><option value="">Toate</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label><label>Preț maxim (€)<input id="maxPrice" type="number" placeholder="ex. 180000"></label><label>Suprafață utilă minimă<input id="minArea" type="number" placeholder="ex. 55"></label><label>Status<select id="status"><option value="">Toate</option><option value="available">Disponibil</option><option value="sold">Vândut</option></select></label><button id="reset">Resetează</button><hr><h3>Surse</h3><div id="sources"></div><details><summary>Adaugă sursă</summary><input id="sname" placeholder="Nume"><input id="surl" placeholder="https://..."><button id="addSource">Adaugă</button></details></aside>
-<section><div class="toolbar"><div><h1>Compară apartamente</h1><p id="meta">Se încarcă…</p></div><input id="search" placeholder="Caută tip/proiect"></div><div id="notice"></div><div class="tablewrap"><table><thead><tr><th>Proiect</th><th>Tip</th><th>Camere</th><th>Preț</th><th>Utilă</th><th>Totală</th><th>€/mp util</th><th>TVA</th><th>Status</th><th>Finalizare</th><th>Sursă</th></tr></thead><tbody id="rows"></tbody></table></div></section></main><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AptCompare — Digital Partners</title>
+  <meta name="description" content="Comparator de tipologii pentru proiecte rezidențiale.">
+  <link rel="preconnect" href="https://www.digitalpartners.ro">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brandwrap">
+    <img class="dp-logo" src="https://www.digitalpartners.ro/wp-content/uploads/digital-partners-logo-300x82.png" alt="Digital Partners">
+    <span class="brand-separator"></span>
+    <div class="apt-brand"><strong>AptCompare</strong><span>Compară tipologii rezidențiale</span></div>
+  </div>
+  <div class="top-search-wrap">
+    <span class="search-icon">⌕</span>
+    <input id="search" class="top-search" placeholder="Caută dezvoltator, proiect sau tipologie…">
+  </div>
+  <div class="top-actions">
+    <button class="ghost" id="manageSources">Surse</button>
+    <button class="primary" id="scanAll">Actualizează datele</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="filters-card">
+    <h2>Filtrează ofertele</h2>
+
+    <label class="stack">Oraș
+      <select id="city"><option value="">Toate orașele</option></select>
+    </label>
+
+    <label class="stack">Zonă
+      <select id="zone"><option value="">Toate zonele</option></select>
+    </label>
+
+    <div class="field-label">Număr camere</div>
+    <div class="room-picker" id="roomPicker">
+      <button type="button" data-rooms="1">1</button>
+      <button type="button" data-rooms="2" class="active">2</button>
+      <button type="button" data-rooms="3">3</button>
+      <button type="button" data-rooms="4">4+</button>
+    </div>
+
+    <div class="range-field">
+      <div class="field-label">Buget maxim (€)</div>
+      <input id="maxPrice" type="range" min="80000" max="500000" step="5000" value="250000">
+      <div class="range-values"><span>80.000</span><strong id="maxPriceValue">250.000</strong><span>500.000+</span></div>
+    </div>
+
+    <div class="range-field">
+      <div class="field-label">Suprafață utilă minimă (mp)</div>
+      <input id="minArea" type="range" min="25" max="180" step="1" value="45">
+      <div class="range-values"><span>25</span><strong id="minAreaValue">45 mp</strong><span>180+</span></div>
+    </div>
+
+    <div class="field-label">Status</div>
+    <label class="check"><input id="underConstruction" type="checkbox" checked><span>În construcție</span></label>
+    <label class="check"><input id="completed" type="checkbox" checked><span>Finalizat</span></label>
+    <label class="check"><input id="unknownStatus" type="checkbox" checked><span>Necunoscut / NA</span></label>
+
+    <div class="field-label facilities-title">Facilități</div>
+    <label class="check"><input class="facility" type="checkbox" value="parcare"><span>Parcare</span></label>
+    <label class="check"><input class="facility" type="checkbox" value="metrou"><span>Metrou</span></label>
+    <label class="check"><input class="facility" type="checkbox" value="spatii verzi"><span>Spații verzi</span></label>
+    <label class="check"><input class="facility" type="checkbox" value="fitness"><span>Fitness</span></label>
+
+    <button class="apply" id="applyFilters">Aplică filtrele</button>
+    <button class="reset-link" id="reset" type="button">Resetează filtrele</button>
+  </aside>
+
+  <section class="content">
+    <div class="content-head">
+      <div>
+        <div class="eyebrow">COMPARATOR REZIDENȚIAL</div>
+        <h1>Proiecte rezidențiale</h1>
+        <p id="meta">Se încarcă…</p>
+      </div>
+      <div class="content-tools">
+        <div class="db-badge" id="dbBadge"><span></span> DB</div>
+        <select id="sortBy" aria-label="Sortează">
+          <option value="relevance">Relevanță</option>
+          <option value="priceAsc">Preț crescător</option>
+          <option value="sqmAsc">€/mp crescător</option>
+          <option value="areaDesc">Suprafață descrescător</option>
+        </select>
+      </div>
+    </div>
+
+    <section class="scan-panel hidden" id="scanPanel">
+      <div class="scan-summary">
+        <div>
+          <strong id="scanTitle">Actualizare date</strong>
+          <span id="scanSummary">Pregătire…</span>
+        </div>
+        <span class="scan-state" id="scanState">RUNNING</span>
+      </div>
+      <div class="progress"><span id="scanProgress"></span></div>
+      <div class="scan-grid" id="scanGrid"></div>
+    </section>
+
+    <div id="notice"></div>
+    <div class="project-grid" id="projects"></div>
+  </section>
+</main>
+
+<div class="drawer" id="sourceDrawer" aria-hidden="true">
+  <div class="drawer-panel">
+    <div class="drawer-head"><div><div class="eyebrow">ADMIN</div><h2>Surse de date</h2></div><button class="iconbtn" id="closeDrawer">×</button></div>
+    <p class="drawer-copy">Sursele sunt persistente în PostgreSQL. Scanarea unei surse actualizează tipologiile deja cunoscute și păstrează istoricul de preț.</p>
+    <div id="sources" class="sources-list"></div>
+    <div class="add-source">
+      <h3>Adaugă sursă</h3>
+      <input id="sname" placeholder="Nume proiect">
+      <input id="surl" placeholder="https://...">
+      <div class="two-cols"><input id="scity" placeholder="Oraș (opțional)"><input id="szone" placeholder="Zonă (opțional)"></div>
+      <button class="primary wide" id="addSource">Adaugă sursa</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="typesModal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head"><div><div class="eyebrow">TIPOLOGII</div><h2 id="modalTitle">Proiect</h2></div><button class="iconbtn" id="closeModal">×</button></div>
+    <div class="types-table-wrap"><table class="types-table"><thead><tr><th>Tip</th><th>Camere</th><th>Utilă</th><th>Preț</th><th>€/mp</th><th>TVA</th><th>Finalizare</th><th>Sursă</th></tr></thead><tbody id="modalRows"></tbody></table></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
