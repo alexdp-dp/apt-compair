@@ -1,0 +1,7 @@
+{
+  "name":"aptcompare-build1",
+  "version":"1.0.1",
+  "private":true,
+  "type":"commonjs",
+  "scripts":{"start":"node server.js"}
+}
