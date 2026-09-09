@@ -1,9 +1,11 @@
-# AptCompare Build 11
+# AptCompare Build 12
 
-Build 11 focuses on generic crawler correctness and conservative data extraction.
+Hotfix / parser recovery build.
 
-- Generic contextual price scoring: never picks the smallest/first euro amount from the page.
-- Prices near parking, garage, storage, design, furnishing, commission, advance/payment, rent or fee terms are rejected/penalized.
-- If an individual price cannot be identified confidently, it stays NA and the existing category `de la` fallback can be used.
-- Generic availability inference is disabled. AptCompare no longer displays `Sold Out`; unclear availability stays empty/NA rather than being guessed.
-- Keeps Build 10 scanning, sitemap discovery, long-tail typology titles, project/location extraction, PostgreSQL admin reset, and stable image fallback.
+- Restores data extraction after Build 11 became too conservative.
+- Listing/category cards are first-class extraction sources: title, rooms, area, price and VAT are saved before detail-page enrichment.
+- Detail pages enrich missing fields but cannot wipe card values with NA.
+- Generic price extraction is context-aware and rejects parking/garage/storage/design/commission/advance/rent/fee amounts.
+- If an individual price is unclear, category `de la` remains the fallback.
+- Generic Sold Out inference remains disabled.
+- Keeps sitemap discovery, long-tail full titles, location-page lookup, PostgreSQL admin reset, scan concurrency and stable image fallback.
